@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0",
+  "status": "unavailable",
+  "reason_codes": ["kaldi_not_installed", "compatible_model_not_acquired", "control_gate_not_run"],
+  "recipe_url": "https://github.com/kaldi-asr/kaldi/tree/master/egs/gop_speechocean762",
+  "kaldi_commit": null,
+  "model_version": null,
+  "model_sha256": null,
+  "dictionary_sha256": null,
+  "model_license": null,
+  "dictionary_license": null,
+  "sample_rate_hz": null,
+  "phone_inventory": null,
+  "control_gate_passed": false,
+  "command": null
+}

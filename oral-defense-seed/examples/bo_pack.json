@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0",
+  "id": "bo-demo",
+  "title": "Bayesian optimization — synthetic training pack",
+  "persona": "A fictional researcher who asks concise methodological questions.",
+  "notes": "Training notes, not a description of the user's actual research. Ask about the objective, evaluation budget, baseline, noise, constraints, and uncertainty. Avoid assuming that Bayesian optimization always outperforms random search.",
+  "glossary": [
+    {"en": "evaluation budget", "ja": "目的関数を評価できる回数の予算"},
+    {"en": "acquisition function", "ja": "獲得関数"},
+    {"en": "baseline", "ja": "比較の基準となる手法"}
+  ],
+  "question_angles": ["Why use Bayesian optimization?", "How would you compare against random search?", "How does observation noise affect your evaluation?"],
+  "pronunciation_overrides": {}
+}

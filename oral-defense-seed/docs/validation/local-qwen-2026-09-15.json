@@ -1,0 +1,325 @@
+{
+  "date": "2026-09-15",
+  "gpu": "AMD Radeon RX 6900 XT / gfx1030 / 16368 MiB",
+  "rocm": "7.2.4",
+  "llama_cpp_commit": "60eeeb6",
+  "model_file": "qwen3.8-27b-abliterated-3.69bpw-12GB-MTP.gguf",
+  "sha256": "17ef7767533efd039d13594603bb0d9a787965759ec653b42f9221b50318e4d7",
+  "browser": "Headless Chrome with autoplay policy override; real WAV decoding and ended events, no microphone recording",
+  "playback_rate": 1.2,
+  "runs": [
+    {
+      "scenario": "networking",
+      "prompt_note": "Before the final guard against inventing personal research plans/conditions.",
+      "elapsed_s": 235.165,
+      "completed_turns": 6,
+      "completed_audio": 12,
+      "audio_duration_s": 146.258,
+      "browser_errors": [],
+      "failure": null,
+      "model": {
+        "endpoint": "http://127.0.0.1:10000/v1",
+        "id": "compatible/qwen38-27b-abliterated",
+        "mock": false,
+        "model": "qwen38-27b-abliterated",
+        "protocol": "chat_completions",
+        "provider": "compatible"
+      },
+      "speech_models": {
+        "coach_answer": "piper/ljspeech",
+        "exercise": "piper/ljspeech",
+        "question": "kokoro/sky-anime"
+      },
+      "research_brief": "This is a synthetic validation case. I am a first-year PhD student studying Bayesian optimization for expensive laboratory experiments. I plan to compare expected improvement with random search on public benchmark functions. I have not run experiments yet and have no measured results, numerical improvements, publications, or proprietary data.",
+      "turns": [
+        {
+          "question_en": "Hello! I'm here for a quick chat about research. You mentioned you're a first-year PhD student working on Bayesian optimization for lab experiments. What made you choose this specific area to study?",
+          "answer_en": "I chose this area because I want to make the most of a limited evaluation budget in expensive lab experiments, and I plan to test whether expected improvement outperforms random search on public benchmarks.",
+          "submitted_via": "shadowing_playback",
+          "has_recording": false
+        },
+        {
+          "question_en": "That sounds like a solid first step. How would you set up the experiment to fairly compare expected improvement against random search?",
+          "answer_en": "I plan to compare them using the same evaluation budget on public benchmarks. I’ll run both methods multiple times and compare their average performance and stability.",
+          "submitted_via": "shadowing_playback",
+          "has_recording": false
+        },
+        {
+          "question_en": "That's a practical and clear setup. You mentioned using public benchmark functions. Could you tell me which specific functions you plan to use, and why those are good for testing your lab-related problem?",
+          "answer_en": "I plan to use public benchmark functions that share features with our lab experiments, such as being expensive to evaluate and having non-smooth or noisy outputs. They allow me to test whether expected improvement can handle limited budgets and uncertainty in a controlled way before moving to actual measurements.",
+          "submitted_via": "shadowing_playback",
+          "has_recording": false
+        },
+        {
+          "question_en": "That makes sense for a controlled test. To change the angle a bit, what made you choose Bayesian optimization over other optimization methods for these expensive experiments?",
+          "answer_en": "For expensive lab experiments, I chose Bayesian optimization because it is designed to make the most of a limited evaluation budget by focusing on the most informative points. This approach helps manage uncertainty in a way that is practical for our specific lab conditions.",
+          "submitted_via": "shadowing_playback",
+          "has_recording": false
+        },
+        {
+          "question_en": "That's a good reason. You mentioned comparing expected improvement and random search. Have you considered how observation noise in your lab data might change that comparison?",
+          "answer_en": "I expect that observation noise could affect the comparison, because expected improvement can model the noise and use it to update its prediction. Random search may not handle the noise well, so the difference between the two could become clearer under noisy conditions.",
+          "submitted_via": "shadowing_playback",
+          "has_recording": false
+        },
+        {
+          "question_en": "That's a useful insight. Since you haven't run experiments yet, how would you decide when to stop evaluating and move to real lab measurements?",
+          "answer_en": "I plan to move to real lab measurements after verifying the method on public benchmarks, specifically once I confirm how the optimization handles the evaluation budget and noise under our specific lab conditions.",
+          "submitted_via": "shadowing_playback",
+          "has_recording": false
+        }
+      ],
+      "audio": [
+        {
+          "stage": "question_playback",
+          "sample_rate": 24000,
+          "duration_s": 11.869,
+          "reference_hash": "91a0d46250066c27c1f3751c234e48d02e46d6959e35cc5a6f1f517557051f75"
+        },
+        {
+          "stage": "model_playback",
+          "sample_rate": 22050,
+          "duration_s": 11.935,
+          "reference_hash": "d608008a8c5fa0d8860c61d78633935de94ac5bd4b13593d4567282fd5b8d72e"
+        },
+        {
+          "stage": "question_playback",
+          "sample_rate": 24000,
+          "duration_s": 8.01,
+          "reference_hash": "11c70772588beb6fd2ebca5d47b96a1e12efa3ff2783479fc5b2b415d6c77630"
+        },
+        {
+          "stage": "model_playback",
+          "sample_rate": 22050,
+          "duration_s": 9.822,
+          "reference_hash": "a373062447fd564fc3b7facbc60f41a800384955f5677cb7a5c793ca6ca99afb"
+        },
+        {
+          "stage": "question_playback",
+          "sample_rate": 24000,
+          "duration_s": 11.405,
+          "reference_hash": "7789d1add43732bc9343c929799eb9e5c26de30703293cfeaf09cdaa4a321836"
+        },
+        {
+          "stage": "model_playback",
+          "sample_rate": 22050,
+          "duration_s": 18.913,
+          "reference_hash": "c4811510dabbd7a28d560c6f9e9266934459b90358c12b6c852d15ed6dd823e1"
+        },
+        {
+          "stage": "question_playback",
+          "sample_rate": 24000,
+          "duration_s": 10.59,
+          "reference_hash": "99cf73cd728022a9b0db25cd2d33d2f2db9b8dd96834a80749622154fa0ce81e"
+        },
+        {
+          "stage": "model_playback",
+          "sample_rate": 22050,
+          "duration_s": 17.485,
+          "reference_hash": "8b38288be8cec69d62ec33d76ba1e2f6e0aa514e673985f332702ec6cc7dc41b"
+        },
+        {
+          "stage": "question_playback",
+          "sample_rate": 24000,
+          "duration_s": 10.312,
+          "reference_hash": "f6c30841002daa961e290975ee822a4b5890fd79e2b2c30fd8399ff4f2bab946"
+        },
+        {
+          "stage": "model_playback",
+          "sample_rate": 22050,
+          "duration_s": 14.896,
+          "reference_hash": "99b6958d5c0c14c4f4e9b792e63da57f986067ec8b06548fdce22f43ae004249"
+        },
+        {
+          "stage": "question_playback",
+          "sample_rate": 24000,
+          "duration_s": 8.482,
+          "reference_hash": "c3306f52967d4f17e8ca6fee0f5b8e02cd1536a56d6b9697bbb2df2e9adff08c"
+        },
+        {
+          "stage": "model_playback",
+          "sample_rate": 22050,
+          "duration_s": 12.539,
+          "reference_hash": "bec49a90530ad378d8a86ca7276f75f9952a52d216eaf7fa9a314e808e707ef7"
+        }
+      ]
+    },
+    {
+      "scenario": "seminar",
+      "prompt_note": "After the final guard against inventing personal research plans/conditions.",
+      "elapsed_s": 283.498,
+      "completed_turns": 6,
+      "completed_audio": 12,
+      "audio_duration_s": 183.727,
+      "browser_errors": [],
+      "failure": null,
+      "model": {
+        "endpoint": "http://127.0.0.1:10000/v1",
+        "id": "compatible/qwen38-27b-abliterated",
+        "mock": false,
+        "model": "qwen38-27b-abliterated",
+        "protocol": "chat_completions",
+        "provider": "compatible"
+      },
+      "speech_models": {
+        "coach_answer": "piper/ljspeech",
+        "exercise": "piper/ljspeech",
+        "question": "kokoro/sky-anime"
+      },
+      "research_brief": "This is a synthetic validation case. I am a first-year PhD student studying Bayesian optimization for expensive laboratory experiments. I plan to compare expected improvement with random search on public benchmark functions. I have not run experiments yet and have no measured results, numerical improvements, publications, or proprietary data.",
+      "turns": [
+        {
+          "question_en": "Hello. You are working on Bayesian optimization for experiments that take a long time to finish. Before choosing a method, how would you define your specific optimization objective in this project?",
+          "answer_en": "At this stage, my specific objective function is not finalized because I am still setting up the comparison framework. I plan to evaluate the performance of expected improvement on public benchmark functions, so I am currently defining the task to measure efficiency rather than a single real-world metric.",
+          "submitted_via": "shadowing_playback",
+          "has_recording": false
+        },
+        {
+          "question_en": "Since you have not run experiments yet, what baseline would you choose for comparison, and why?",
+          "answer_en": "I would choose random search as the baseline, since it is a common standard for comparison. I have not run the experiments yet, so my final decision will be based on how clearly it contrasts with expected improvement in terms of efficiency on public benchmark functions.",
+          "submitted_via": "shadowing_playback",
+          "has_recording": false
+        },
+        {
+          "question_en": "Thanks for explaining your setup. You mentioned comparing the efficiency of the methods. How do you plan to measure or visualize that efficiency on the benchmark functions?",
+          "answer_en": "I haven't finalized the specific efficiency metric or visualization method yet, but I am considering measures such as the number of evaluations versus the best function value found. The goal is to clearly show how quickly expected improvement finds a good solution compared to random search on the public benchmarks.",
+          "submitted_via": "shadowing_playback",
+          "has_recording": false
+        },
+        {
+          "question_en": "Thanks for sharing your measurement idea. Since you haven't finalized the exact metric yet, what are the main types of noise you expect in the function evaluations, and how would you handle it if it becomes significant during the experiment?",
+          "answer_en": "I expect mainly observation noise in the evaluations, though I haven't finalized how to measure it yet. I am considering how to handle it, such as by adjusting the uncertainty model, if it significantly affects the results.",
+          "submitted_via": "shadowing_playback",
+          "has_recording": false
+        },
+        {
+          "question_en": "You mentioned adjusting the uncertainty model to handle noise. Could you explain what the uncertainty model is in Bayesian optimization, and how it guides the next evaluation point?",
+          "answer_en": "The uncertainty model in Bayesian optimization is the statistical estimate, usually a mean and variance, that represents our prediction of the function value and how confident we are in that prediction. It guides the next evaluation point by balancing exploration of uncertain areas and exploitation of promising areas to maximize the expected improvement.",
+          "submitted_via": "shadowing_playback",
+          "has_recording": false
+        },
+        {
+          "question_en": "You described how the mean and variance guide exploration and exploitation. To keep the uncertainty estimate meaningful, how do you plan to account for the fact that the surrogate model itself may be inaccurate, especially in areas where you have few data points?",
+          "answer_en": "To account for surrogate model inaccuracy, I plan to rely on the model's variance estimate, which tends to be larger in areas with few data points, to guide exploration toward those uncertain regions. I haven't finalized the exact method to quantify model error, but I am considering approaches like cross-validation or comparing different surrogate models to ensure the uncertainty estimate remains reliable.",
+          "submitted_via": "shadowing_playback",
+          "has_recording": false
+        }
+      ],
+      "audio": [
+        {
+          "stage": "question_playback",
+          "sample_rate": 24000,
+          "duration_s": 11.593,
+          "reference_hash": "74585bcaae665bc6b4b67997ca2b88b365c27ac67336af1747a65dbbd2b1f01c"
+        },
+        {
+          "stage": "model_playback",
+          "sample_rate": 22050,
+          "duration_s": 18.425,
+          "reference_hash": "e920e1e2ba74fba151d5d8ba0854511f721f93f66bf8978511c5db53dee7c701"
+        },
+        {
+          "stage": "question_playback",
+          "sample_rate": 24000,
+          "duration_s": 5.624,
+          "reference_hash": "7f26a105f85b01cbd19fa1f2499be0ebcf189130dd0f9d53da5ba66651888bbb"
+        },
+        {
+          "stage": "model_playback",
+          "sample_rate": 22050,
+          "duration_s": 16.858,
+          "reference_hash": "5466c8743eb83550399bff977d6564ca22b809d527429953a5b52b142f7f8970"
+        },
+        {
+          "stage": "question_playback",
+          "sample_rate": 24000,
+          "duration_s": 9.617,
+          "reference_hash": "39b3852171391681b7f4360d0ef4d20c2451047901b40fedba1029f2f12af523"
+        },
+        {
+          "stage": "model_playback",
+          "sample_rate": 22050,
+          "duration_s": 19.865,
+          "reference_hash": "2843520a8b46a507d6152ad2864932565e20691db3f07c5fdf38b9899706efdd"
+        },
+        {
+          "stage": "question_playback",
+          "sample_rate": 24000,
+          "duration_s": 13.133,
+          "reference_hash": "be69828fe393971325b71ec3aee7115d619e6b6d6a49162ed420c7927d4a13b1"
+        },
+        {
+          "stage": "model_playback",
+          "sample_rate": 22050,
+          "duration_s": 13.595,
+          "reference_hash": "ddb9dadb68434f8fcc2913c78aec8cebe33ecd2a4f1d8b366e10d86ba03eec0e"
+        },
+        {
+          "stage": "question_playback",
+          "sample_rate": 24000,
+          "duration_s": 10.594,
+          "reference_hash": "3a0573bff7f776bafbc542f5b544e4aeea7c2f71f9d23bdad92cf453c2141b95"
+        },
+        {
+          "stage": "model_playback",
+          "sample_rate": 22050,
+          "duration_s": 23.673,
+          "reference_hash": "2a05cd2d6f1997df277deaf7d1e894f4d88af8fb25f58117664007693320b912"
+        },
+        {
+          "stage": "question_playback",
+          "sample_rate": 24000,
+          "duration_s": 15.266,
+          "reference_hash": "b676c4f4fa12af0b50bdb4d45a724ade0390a2bc7565912748b77ac2aac984ab"
+        },
+        {
+          "stage": "model_playback",
+          "sample_rate": 22050,
+          "duration_s": 25.484,
+          "reference_hash": "c0ce96c33cb194e55e69d055495b61cdf2d3046a135997e53251a439814c4d58"
+        }
+      ]
+    }
+  ],
+  "factual_guard_probes": {
+    "brief": "I am a first-year PhD student studying Bayesian optimization for expensive laboratory experiments. I plan to compare expected improvement with random search on public benchmark functions. I have not run experiments yet and have no measured results or numerical improvements.",
+    "results": [
+      {
+        "question": "Which specific benchmark functions will you use, and what noise do your actual lab experiments have?",
+        "response": {
+          "explanation_ja": "質問は2つなので、英語で簡潔に答えます。1つ目はベンチマーク関数、2つ目は実際の実験のノイズです。まだ実験をやっていないので、具体的な数値結果はありませんが、検討している選択肢として自然に説明するよう修正しました。",
+          "answer_en": "I plan to use public benchmark functions like Sphere and Rosenbrock to compare expected improvement and random search. As for noise, I haven't tested my actual lab experiments yet, so I can't give specific values.",
+          "needs_user_input": []
+        },
+        "elapsed_s": 5.78
+      },
+      {
+        "question": "What numerical improvement did your method achieve over random search?",
+        "response": {
+          "explanation_ja": "まだ実験を実施していないため、数値的な改善結果はありません。この質問では、実際に得られたデータに基づいて回答する必要があります。ここでは、まだ実験を実施していないことと、今後行う計画を自然に説明する短い回答を作成しました。",
+          "answer_en": "I haven't run the experiments yet, so I don't have numerical results to share. I plan to compare expected improvement against random search on public benchmark functions and will report the findings once they are complete.",
+          "needs_user_input": []
+        },
+        "elapsed_s": 4.05
+      },
+      {
+        "question": "How many evaluations and repetitions have you decided to run?",
+        "response": {
+          "explanation_ja": "まだ具体的な回数は決めていないので、質問に対して自然に返すための短い英語の回答を提案します。数値を断定せず、「まだ決めていません」を英語で自然に伝える表現です。",
+          "answer_en": "I haven't decided yet, but I'm thinking of a few dozen evaluations with a few repetitions to keep the cost low.",
+          "needs_user_input": []
+        },
+        "elapsed_s": 4.01
+      },
+      {
+        "question": "What can you tell a researcher you just met about your project?",
+        "response": {
+          "explanation_ja": "まだ実験を実施していないため、具体的な成果や数値については触れず、現在検討している比較対象（期待改善度とランダム検索）と対象（公開ベンチマーク）を自然に伝える形にしました。短い自己紹介として、相手に質問しやすいよう、具体的な計画を軽く示す構成です。",
+          "answer_en": "I am currently comparing expected improvement with random search on public benchmark functions, and I would love to discuss how you approach similar evaluations.",
+          "needs_user_input": []
+        },
+        "elapsed_s": 4.35
+      }
+    ]
+  }
+}

@@ -1,0 +1,30 @@
+[project]
+name = "oral-defense-drill"
+version = "0.4.0"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.34,<1",
+    "httpx>=0.28,<1",
+    "python-multipart>=0.0.20",
+    "imageio-ffmpeg>=0.6,<1",
+    "piper-tts>=1.4,<2",
+    "kokoro-onnx>=0.4,<0.5",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8,<10",
+    "ruff>=0.16.7",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]

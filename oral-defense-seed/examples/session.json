@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "scenario": "lab_defense",
+  "research_brief": "Synthetic example: I study optimization when objective evaluations are expensive. I have not provided any experimental result yet.",
+  "settings": {
+    "language_level": "intermediate",
+    "technical_depth": "medium",
+    "strictness": "high",
+    "max_questions": 6,
+    "max_follow_ups": 2,
+    "locale": "en-US"
+  },
+  "example_question": "Why would you choose Bayesian optimization for this problem?",
+  "example_reference": "Each evaluation is expensive, so I want to use the available budget carefully.",
+  "reference_origin": "coach",
+  "mode": "read_aloud"
+}
