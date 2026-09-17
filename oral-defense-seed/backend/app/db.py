@@ -563,6 +563,52 @@ def _backfill_assessment_runs(db, context):
         )
 
 
+_DOCUMENTS_DDL = (
+    """CREATE TABLE IF NOT EXISTS session_documents (
+ id TEXT NOT NULL PRIMARY KEY,
+ session_id TEXT NOT NULL,
+ source_type TEXT NOT NULL CHECK(source_type IN ('brief','pdf','url')),
+ original_name TEXT,
+ original_url TEXT,
+ source_hash TEXT,
+ content_hash TEXT,
+ extraction_status TEXT NOT NULL CHECK(extraction_status IN
+  ('pending','succeeded','failed','unsupported')),
+ error_code TEXT,
+ extractor TEXT,
+ extractor_version TEXT,
+ extractor_config_json TEXT CHECK(extractor_config_json IS NULL OR json_valid(extractor_config_json)),
+ provenance_role TEXT NOT NULL CHECK(provenance_role IN ('learner_work','reference')),
+ created_at TEXT NOT NULL,
+ completed_at TEXT,
+ FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE)""",
+    """CREATE TABLE IF NOT EXISTS document_segments (
+ id TEXT NOT NULL PRIMARY KEY,
+ document_id TEXT NOT NULL,
+ ordinal INTEGER NOT NULL CHECK(ordinal >= 1),
+ text TEXT NOT NULL,
+ text_hash TEXT NOT NULL,
+ location_json TEXT CHECK(location_json IS NULL OR json_valid(location_json)),
+ UNIQUE(document_id, ordinal),
+ FOREIGN KEY(document_id) REFERENCES session_documents(id) ON DELETE CASCADE)""",
+    """CREATE TABLE IF NOT EXISTS session_pack_manifests (
+ id TEXT NOT NULL PRIMARY KEY,
+ session_id TEXT NOT NULL,
+ schema_version TEXT NOT NULL,
+ pack_hash TEXT NOT NULL,
+ pack_json TEXT NOT NULL CHECK(json_valid(pack_json)),
+ adopted_json TEXT NOT NULL CHECK(json_valid(adopted_json)),
+ created_at TEXT NOT NULL,
+ FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE)""",
+    "CREATE INDEX IF NOT EXISTS session_documents_session_idx ON session_documents(session_id)",
+    "CREATE INDEX IF NOT EXISTS document_segments_document_idx ON document_segments(document_id)",
+    "CREATE INDEX IF NOT EXISTS session_pack_manifests_session_idx ON session_pack_manifests(session_id)",
+    """CREATE TRIGGER IF NOT EXISTS session_pack_manifests_immutable
+ BEFORE UPDATE ON session_pack_manifests
+ BEGIN SELECT RAISE(ABORT, 'pack manifest is immutable'); END""",
+)
+
+
 @dataclass(frozen=True)
 class Migration:
     version: int
@@ -603,6 +649,7 @@ MIGRATIONS = (
     ),
     Migration(6, "resumable_deletion", statements=_DELETION_DDL),
     Migration(7, "assessment_runs", statements=_ASSESSMENT_DDL, func=_backfill_assessment_runs),
+    Migration(8, "session_documents", statements=_DOCUMENTS_DDL),
 )
 
 BASELINE_VERSION = 1

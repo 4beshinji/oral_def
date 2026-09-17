@@ -81,11 +81,12 @@ def test_fresh_database_records_migrations_and_is_idempotent(tmp_path):
         (5, "recording_lifecycle"),
         (6, "resumable_deletion"),
         (7, "assessment_runs"),
+        (8, "session_documents"),
     ]
     Database(tmp_path)
     assert schema_snapshot(tmp_path) == first
     with sqlite3.connect(tmp_path / "drill.sqlite3") as connection:
-        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 7
+        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 8
 
 
 def test_legacy_database_is_baselined_and_settings_backfilled(tmp_path):
@@ -108,7 +109,7 @@ def test_legacy_database_is_baselined_and_settings_backfilled(tmp_path):
             for row in connection.execute("SELECT version FROM schema_migrations ORDER BY version")
         ]
         assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
-    assert versions == [1, 2, 3, 4, 5, 6, 7]
+    assert versions == [1, 2, 3, 4, 5, 6, 7, 8]
     assert saved["text_model"]["id"] == "mock/demo"
     assert set(saved["role_models"]) == {
         "examiner",
@@ -170,7 +171,7 @@ def test_failed_migration_does_not_record_or_partially_apply(tmp_path, monkeypat
     with pytest.raises(RuntimeError):
         Database(tmp_path)
     with sqlite3.connect(tmp_path / "drill.sqlite3") as connection:
-        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 7
+        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone()[0] == 8
         tables = {
             row[0]
             for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")

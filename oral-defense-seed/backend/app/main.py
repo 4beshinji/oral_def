@@ -26,6 +26,7 @@ from .db import (
     turns_for,
     uid,
 )
+from .documents import install_documents
 from .errors import APIError
 from .providers import Providers
 from .schemas import (
@@ -410,6 +411,36 @@ def create_app(settings=None):
                     "provider_configuration"
                 )
                 session["requests"].append(request_info)
+            session["documents"] = []
+            for document in db.execute(
+                "SELECT * FROM session_documents WHERE session_id=? ORDER BY created_at",
+                (session_id,),
+            ):
+                info = dict(document)
+                info["extractor_config"] = json.loads(info.pop("extractor_config_json") or "null")
+                info["segments"] = [
+                    {**dict(segment), "location": json.loads(segment["location_json"] or "null")}
+                    for segment in db.execute(
+                        "SELECT * FROM document_segments WHERE document_id=? ORDER BY ordinal",
+                        (info["id"],),
+                    )
+                ]
+                for segment in info["segments"]:
+                    segment.pop("location_json")
+                session["documents"].append(info)
+            manifest = db.execute(
+                "SELECT * FROM session_pack_manifests WHERE session_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+            session["pack_manifest"] = (
+                {
+                    **dict(manifest),
+                    "pack": json.loads(manifest["pack_json"]),
+                    "adopted": json.loads(manifest["adopted_json"]),
+                }
+                if manifest
+                else None
+            )
             return session
 
     @app.get("/v1/sessions/{session_id}")
@@ -1067,6 +1098,7 @@ def create_app(settings=None):
         return reconcile_audio_files(database, dry_run=True)
 
     install_conversation(app, database, providers, tts)
+    install_documents(app, database, settings)
 
     static_dir = ROOT / "frontend/dist"
     if static_dir.is_dir():

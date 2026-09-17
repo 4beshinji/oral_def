@@ -100,3 +100,31 @@ class SpeechModelInput(Input):
 
 class SpeechPreviewInput(Input):
     model: str = Field(min_length=1, max_length=100)
+
+
+class DocumentInput(Input):
+    source_type: Literal["brief", "pdf", "url"]
+    provenance_role: Literal["learner_work", "reference"] = "reference"
+    text: str = Field(default="", max_length=200_000)
+    url: str | None = Field(default=None, max_length=2000)
+    name: str = Field(default="", max_length=300)
+
+
+class AdoptedDocument(Input):
+    document_id: UUID
+    segment_ids: list[UUID] = Field(default_factory=list, max_length=2000)
+
+
+class PackManifestInput(Input):
+    schema_version: str = Field(min_length=1, max_length=50)
+    pack: dict
+    adopted: list[AdoptedDocument] = Field(default_factory=list, max_length=200)
+
+    @field_validator("pack")
+    @classmethod
+    def manifest_pack_size(cls, value):
+        from .db import encode
+
+        if len(encode(value)) > 8000:
+            raise ValueError("PackはJSON全体で8000文字以下にしてください")
+        return value
