@@ -344,7 +344,7 @@ def test_session_and_coach_limits(client):
     assert client.get(f"/v1/sessions/{sid}").json()["status"] == "completed"
 
 
-def test_inflight_writes_are_busy(client, monkeypatch):
+def test_operations_are_independent_of_a_process_wide_lock(client, monkeypatch):
     sid, tid = new_turn(client)
     entered, release = Event(), Event()
     original = client.app.state.providers.text
@@ -361,11 +361,13 @@ def test_inflight_writes_are_busy(client, monkeypatch):
         )
         assert entered.wait(5)
         try:
-            assert client.delete(f"/v1/sessions/{sid}").status_code == 409
-            assert client.get(f"/v1/sessions/{sid}").status_code == 200
+            # A slow provider call must not serialize unrelated writes.
+            assert client.delete(f"/v1/sessions/{sid}").status_code == 200
         finally:
             release.set()
-        assert future.result().status_code == 200
+        # The late result must not revive the deleted session.
+        assert future.result().status_code in {200, 404, 409}
+    assert client.get(f"/v1/sessions/{sid}").status_code == 404
 
 
 def test_processing_requests_mark_interrupted_on_restart(client, tmp_path):

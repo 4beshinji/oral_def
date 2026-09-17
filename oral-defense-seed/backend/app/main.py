@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sqlite3
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -51,7 +52,6 @@ def create_app(settings=None):
     app = FastAPI(title="Oral Defense Drill", version="0.4.0")
     app.state.database = database
     app.state.providers = providers
-    write_lock = asyncio.Lock()
     audio_root = (settings.data_dir / "audio").resolve()
 
     @app.exception_handler(APIError)
@@ -121,16 +121,7 @@ def create_app(settings=None):
                     return reject(413, "upload_limit", "uploadは10 MiB以下にしてください。")
                 parts.append(chunk)
             request._body = b"".join(parts)
-            if request.url.path == "/v1/text-models/refresh" or request.url.path.endswith(
-                "/conversation/control"
-            ):
-                return await call_next(request)
-            if write_lock.locked():
-                return reject(409, "busy", "処理中です。終了後にもう一度操作してください。")
-            async with write_lock:
-                response = await call_next(request)
-        else:
-            response = await call_next(request)
+        response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Cache-Control"] = "no-store"
@@ -169,6 +160,25 @@ def create_app(settings=None):
         payload = body.model_dump(mode="json")
         request_id = payload["request_id"]
         payload_hash = digest(encode(payload))
+
+        def replay(existing):
+            if (
+                existing["action"] != action
+                or existing["payload_hash"] != payload_hash
+                or existing["session_id"] != session_id
+            ):
+                raise APIError(
+                    409, "request_conflict", "このrequest_idは別の入力に使用されています。"
+                )
+            if existing["status"] == "done":
+                return json.loads(existing["result_json"])
+            raise APIError(
+                409,
+                existing["status"],
+                "処理中または中断済みの要求です。結果不明の再試行には新しいIDが必要で、再課金される場合があります。",
+                True,
+            )
+
         with database.connect() as db:
             session = row(db, "sessions", session_id)
             if session["deletion_status"] != "active":
@@ -185,34 +195,28 @@ def create_app(settings=None):
                 "SELECT * FROM requests WHERE request_id=?", (request_id,)
             ).fetchone()
             if existing:
-                if (
-                    existing["action"] != action
-                    or existing["payload_hash"] != payload_hash
-                    or existing["session_id"] != session_id
-                ):
-                    raise APIError(
-                        409, "request_conflict", "このrequest_idは別の入力に使用されています。"
-                    )
-                if existing["status"] == "done":
-                    return json.loads(existing["result_json"])
-                raise APIError(
-                    409,
-                    existing["status"],
-                    "処理中または中断済みの要求です。結果不明の再試行には新しいIDが必要で、再課金される場合があります。",
-                    True,
+                return replay(existing)
+            try:
+                db.execute(
+                    "INSERT INTO requests (request_id,session_id,action,payload_hash,payload_json,status,created_at) VALUES (?,?,?,?,?,?,?)",
+                    (
+                        request_id,
+                        session_id,
+                        action,
+                        payload_hash,
+                        encode(stored_input),
+                        "processing",
+                        now(),
+                    ),
                 )
-            db.execute(
-                "INSERT INTO requests (request_id,session_id,action,payload_hash,payload_json,status,created_at) VALUES (?,?,?,?,?,?,?)",
-                (
-                    request_id,
-                    session_id,
-                    action,
-                    payload_hash,
-                    encode(stored_input),
-                    "processing",
-                    now(),
-                ),
-            )
+            except sqlite3.IntegrityError:
+                # A concurrent identical request won the insert; replay it.
+                existing = db.execute(
+                    "SELECT * FROM requests WHERE request_id=?", (request_id,)
+                ).fetchone()
+                if existing is None:
+                    raise
+                return replay(existing)
         try:
             with database.connect() as db:
                 result = operation(db)
@@ -221,6 +225,12 @@ def create_app(settings=None):
                     (encode(result), request_id),
                 )
             return result
+        except sqlite3.IntegrityError as exc:
+            with database.connect() as db:
+                db.execute("UPDATE requests SET status='failed' WHERE request_id=?", (request_id,))
+            raise APIError(
+                409, "conflict", "同時操作と競合しました。もう一度お試しください。", True
+            ) from exc
         except Exception:
             with database.connect() as db:
                 db.execute("UPDATE requests SET status='failed' WHERE request_id=?", (request_id,))
@@ -682,38 +692,66 @@ def create_app(settings=None):
             }
             temp_path.replace(path)
             with database.connect() as db:
-                db.execute(
-                    "INSERT INTO audio_files (id,session_id,filename,media_type,cache_key,kind,storage_key,content_hash,media_json,save_status) VALUES (?,?,?,?,NULL,?,?,?,?,?)",
-                    (
-                        audio_id,
-                        session["id"],
-                        path.name,
-                        media_type,
-                        "recording",
-                        path.name,
-                        content_hash,
-                        encode(media),
-                        "ready",
-                    ),
-                )
-                db.execute(
-                    "INSERT INTO attempts (id,session_id,exercise_id,audio_id,dictation_text,audio_meta_json,result_json,created_at,client_attempt_key,input_kind,capture_requested_json,capture_actual_json,file_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    (
-                        attempt_id,
-                        session["id"],
-                        eid,
-                        audio_id,
-                        None,
-                        encode(metadata),
-                        None,
-                        now(),
-                        client_attempt_key,
-                        input_kind,
-                        encode(capture_data),
-                        encode(media),
-                        "ready",
-                    ),
-                )
+                session_row = db.execute(
+                    "SELECT deletion_status FROM sessions WHERE id=?", (session["id"],)
+                ).fetchone()
+                if session_row is None or session_row["deletion_status"] != "active":
+                    raise APIError(409, "session_deleting", "削除中のセッションです。")
+                try:
+                    db.execute(
+                        "INSERT INTO audio_files (id,session_id,filename,media_type,cache_key,kind,storage_key,content_hash,media_json,save_status) VALUES (?,?,?,?,NULL,?,?,?,?,?)",
+                        (
+                            audio_id,
+                            session["id"],
+                            path.name,
+                            media_type,
+                            "recording",
+                            path.name,
+                            content_hash,
+                            encode(media),
+                            "ready",
+                        ),
+                    )
+                    db.execute(
+                        "INSERT INTO attempts (id,session_id,exercise_id,audio_id,dictation_text,audio_meta_json,result_json,created_at,client_attempt_key,input_kind,capture_requested_json,capture_actual_json,file_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            attempt_id,
+                            session["id"],
+                            eid,
+                            audio_id,
+                            None,
+                            encode(metadata),
+                            None,
+                            now(),
+                            client_attempt_key,
+                            input_kind,
+                            encode(capture_data),
+                            encode(media),
+                            "ready",
+                        ),
+                    )
+                except sqlite3.IntegrityError:
+                    db.rollback()
+                    existing = db.execute(
+                        """SELECT a.id AS attempt_id,a.audio_id,a.audio_meta_json,af.content_hash,
+                                  a.exercise_id
+                           FROM attempts a LEFT JOIN audio_files af ON af.id=a.audio_id
+                           WHERE a.session_id=? AND a.client_attempt_key=?""",
+                        (session["id"], client_attempt_key),
+                    ).fetchone()
+                    if (
+                        existing is not None
+                        and existing["exercise_id"] == eid
+                        and existing["content_hash"] == content_hash
+                    ):
+                        temp_path.unlink(missing_ok=True)
+                        path.unlink(missing_ok=True)
+                        return {
+                            "attempt_id": existing["attempt_id"],
+                            "audio_id": existing["audio_id"],
+                            "audio_meta": json.loads(existing["audio_meta_json"]),
+                        }
+                    raise
         except Exception:
             temp_path.unlink(missing_ok=True)
             path.unlink(missing_ok=True)
@@ -797,26 +835,42 @@ def create_app(settings=None):
                     "処理中または中断済みの要求です。結果不明の再試行には新しいIDが必要です。",
                     True,
                 )
-            db.execute(
-                "INSERT INTO requests (request_id,session_id,action,payload_hash,payload_json,status,created_at) VALUES (?,?,?,?,?,'processing',?)",
-                (request_id, session["id"], action, payload_hash, encode(payload), now()),
-            )
-            db.execute(
-                "INSERT INTO assessment_runs (id,attempt_id,session_id,input_kind,execution_status,evidence_status,provider,model_version,config_json,reference_hash,result_json,error_code,error_message,request_id,started_at,finished_at,created_at) VALUES (?,?,?,?,'running','pending',?,?,?,?,NULL,NULL,NULL,?,?,NULL,?)",
-                (
-                    run_id,
-                    identity,
-                    session["id"],
-                    attempt["input_kind"],
-                    settings.pronunciation_provider,
-                    None,
-                    encode(config_snapshot),
-                    exercise["reference_hash"],
-                    request_id,
-                    now(),
-                    now(),
-                ),
-            )
+            try:
+                db.execute(
+                    "INSERT INTO requests (request_id,session_id,action,payload_hash,payload_json,status,created_at) VALUES (?,?,?,?,?,'processing',?)",
+                    (request_id, session["id"], action, payload_hash, encode(payload), now()),
+                )
+                db.execute(
+                    "INSERT INTO assessment_runs (id,attempt_id,session_id,input_kind,execution_status,evidence_status,provider,model_version,config_json,reference_hash,result_json,error_code,error_message,request_id,started_at,finished_at,created_at) VALUES (?,?,?,?,'running','pending',?,?,?,?,NULL,NULL,NULL,?,?,NULL,?)",
+                    (
+                        run_id,
+                        identity,
+                        session["id"],
+                        attempt["input_kind"],
+                        settings.pronunciation_provider,
+                        None,
+                        encode(config_snapshot),
+                        exercise["reference_hash"],
+                        request_id,
+                        now(),
+                        now(),
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                db.rollback()
+                concurrent = db.execute(
+                    "SELECT * FROM requests WHERE request_id=?", (request_id,)
+                ).fetchone()
+                if concurrent is None:
+                    raise
+                if concurrent["status"] == "done":
+                    return json.loads(concurrent["result_json"])
+                raise APIError(
+                    409,
+                    concurrent["status"],
+                    "同じ評価要求が処理中です。結果を待つか新しいIDを使用してください。",
+                    True,
+                )
         try:
             result = pronunciation.assess(
                 path,
