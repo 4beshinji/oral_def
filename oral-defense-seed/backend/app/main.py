@@ -12,7 +12,19 @@ from starlette.exceptions import HTTPException
 from . import audio, contexts, dictation, pronunciation
 from .config import ROOT, Settings
 from .conversation import install_conversation
-from .db import Database, digest, encode, now, row, uid
+from .db import (
+    Database,
+    digest,
+    digest_bytes,
+    encode,
+    now,
+    purge_session,
+    reconcile_audio_files,
+    row,
+    turn_row,
+    turns_for,
+    uid,
+)
 from .errors import APIError
 from .providers import Providers
 from .schemas import (
@@ -34,51 +46,13 @@ from .schemas import (
 
 def create_app(settings=None):
     settings = settings or Settings()
-    database = Database(settings.data_dir)
     providers = Providers(settings)
+    database = Database(settings.data_dir, speech_defaults=providers.speech_catalog.defaults())
     app = FastAPI(title="Oral Defense Drill", version="0.4.0")
     app.state.database = database
     app.state.providers = providers
     write_lock = asyncio.Lock()
     audio_root = (settings.data_dir / "audio").resolve()
-
-    # Upgrade existing sessions once, retaining their recorded provider instead of
-    # silently changing it when the server's default provider changes.
-    with database.connect() as db:
-        for old in db.execute("SELECT id,settings_json FROM sessions").fetchall():
-            saved = json.loads(old["settings_json"])
-            if "text_model" in saved:
-                continue
-            previous = saved.get("providers_at_start", {}).get("text", {})
-            provider = previous.get("provider", "mock")
-            model = previous.get("model") or "demo"
-            saved["text_model"] = {
-                "id": f"{provider}/{model}",
-                "provider": provider,
-                "model": model,
-                "protocol": "mock" if provider == "mock" else "chat_completions",
-                "endpoint": previous.get("endpoint") or "",
-                "mock": provider == "mock",
-            }
-            db.execute("UPDATE sessions SET settings_json=? WHERE id=?", (encode(saved), old["id"]))
-
-    with database.connect() as db:
-        for old in db.execute("SELECT id,settings_json FROM sessions").fetchall():
-            saved = json.loads(old["settings_json"])
-            if "role_models" not in saved:
-                saved["role_models"] = {role: saved["text_model"] for role in TEXT_ROLES}
-                db.execute(
-                    "UPDATE sessions SET settings_json=? WHERE id=?", (encode(saved), old["id"])
-                )
-
-    with database.connect() as db:
-        for old in db.execute("SELECT id,settings_json FROM sessions").fetchall():
-            saved = json.loads(old["settings_json"])
-            if "speech_models" not in saved:
-                saved["speech_models"] = providers.speech_catalog.defaults()
-                db.execute(
-                    "UPDATE sessions SET settings_json=? WHERE id=?", (encode(saved), old["id"])
-                )
 
     @app.exception_handler(APIError)
     async def handle_error(request, error):
@@ -162,17 +136,12 @@ def create_app(settings=None):
         response.headers["Cache-Control"] = "no-store"
         return response
 
-    def turns_for(db, session_id):
-        return [
-            dict(t)
-            for t in db.execute(
-                "SELECT * FROM turns WHERE session_id=? ORDER BY ordinal", (session_id,)
-            )
-        ]
-
     def owner_of_turn(db, turn_id):
-        turn = row(db, "turns", turn_id)
-        return turn, row(db, "sessions", turn["session_id"])
+        turn = turn_row(db, turn_id)
+        session = row(db, "sessions", turn["session_id"])
+        if session["deletion_status"] != "active":
+            raise APIError(409, "session_deleting", "削除中のセッションです。")
+        return turn, session
 
     def active_turn(db, turn_id):
         turn, session = owner_of_turn(db, turn_id)
@@ -185,13 +154,15 @@ def create_app(settings=None):
     def saved_audio(db, audio_id):
         record = row(db, "audio_files", audio_id)
         path = (audio_root / record["filename"]).resolve()
-        if path.parent != audio_root or not path.is_file():
+        if record["save_status"] != "ready" or path.parent != audio_root or not path.is_file():
             raise APIError(404, "audio_not_found", "音声が見つかりません。")
         return record, path
 
     def assistance(db, turn_id, exercise_id, kind):
+        turn = row(db, "turns", turn_id)
         db.execute(
-            "INSERT INTO assistance VALUES (?,?,?,?,?)", (uid(), turn_id, exercise_id, kind, now())
+            "INSERT INTO assistance (id,session_id,turn_id,exercise_id,kind,created_at) VALUES (?,?,?,?,?,?)",
+            (uid(), turn["session_id"], turn_id, exercise_id, kind, now()),
         )
 
     def idempotent(session_id, action, body, operation):
@@ -200,6 +171,8 @@ def create_app(settings=None):
         payload_hash = digest(encode(payload))
         with database.connect() as db:
             session = row(db, "sessions", session_id)
+            if session["deletion_status"] != "active":
+                raise APIError(409, "session_deleting", "削除中のセッションです。")
             stored_input = {
                 **payload,
                 "provider_configuration": {
@@ -314,7 +287,7 @@ def create_app(settings=None):
         with database.connect() as db:
             snapshot = encode(body.pack)
             db.execute(
-                "INSERT INTO sessions VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO sessions (id,created_at,pack_snapshot_json,pack_hash,research_brief,scenario,settings_json,status) VALUES (?,?,?,?,?,?,?,?)",
                 (
                     session_id,
                     now(),
@@ -377,7 +350,23 @@ def create_app(settings=None):
                     ):
                         attempt = dict(value)
                         attempt["audio_meta"] = json.loads(attempt.pop("audio_meta_json"))
-                        attempt["result"] = json.loads(attempt.pop("result_json") or "null")
+                        legacy_result = attempt.pop("result_json")
+                        run = db.execute(
+                            "SELECT * FROM assessment_runs WHERE attempt_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
+                            (attempt["id"],),
+                        ).fetchone()
+                        attempt["assessment"] = None
+                        if run is not None:
+                            assessment = dict(run)
+                            assessment["result"] = json.loads(
+                                assessment.pop("result_json") or "null"
+                            )
+                            assessment["config"] = json.loads(
+                                assessment.pop("config_json") or "null"
+                            )
+                            attempt["assessment"] = assessment
+                        source = run["result_json"] if run is not None else legacy_result
+                        attempt["result"] = json.loads(source or "null")
                         exercise["attempts"].append(attempt)
                     turn["exercises"].append(exercise)
                 turn["has_recording"] = any(
@@ -521,7 +510,7 @@ def create_app(settings=None):
             result = providers.text(body.level, messages, session_id=session["id"], target=target)
             message_id = uid()
             db.execute(
-                "INSERT INTO coach_messages VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO coach_messages (id,session_id,turn_id,level,user_note,draft,response_json,created_at) VALUES (?,?,?,?,?,?,?,?)",
                 (
                     message_id,
                     session["id"],
@@ -542,10 +531,19 @@ def create_app(settings=None):
     def create_exercise(turn_id: UUID, body: ExerciseInput):
         tid, identity = str(turn_id), uid()
         with database.connect() as db:
-            active_turn(db, tid)
+            _, session = active_turn(db, tid)
             db.execute(
-                "INSERT INTO exercises VALUES (?,?,?,?,?,?,?)",
-                (identity, tid, body.mode, body.text, digest(body.text), body.origin, now()),
+                "INSERT INTO exercises (id,session_id,turn_id,mode,reference_text,reference_hash,reference_origin,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    identity,
+                    session["id"],
+                    tid,
+                    body.mode,
+                    body.text,
+                    digest(body.text),
+                    body.origin,
+                    now(),
+                ),
             )
             if body.mode == "read_aloud":
                 assistance(db, tid, identity, "reference_shown")
@@ -559,30 +557,52 @@ def create_app(settings=None):
 
         def operation(db):
             active_turn(db, tid)
-            if not db.execute(
-                "SELECT 1 FROM exercises WHERE turn_id=? AND reference_text=?",
+            exercise = db.execute(
+                "SELECT id FROM exercises WHERE turn_id=? AND reference_text=? ORDER BY created_at",
                 (tid, body.answer_en),
-            ).fetchone():
+            ).fetchone()
+            if exercise is None:
                 raise APIError(
                     409,
                     "reference_not_fixed",
                     "この回答文を先に練習用の参照文として固定してください。",
                 )
             db.execute(
-                "UPDATE turns SET confirmed_answer_en=?,submitted_via='confirmed_reference',unable_to_answer=? WHERE id=?",
-                (body.answer_en, body.unable_to_answer, tid),
+                "INSERT INTO turn_submissions (turn_id,session_id,answer_text,submitted_via,source_exercise_id,source_playback_id,committed_at,provenance_status) VALUES (?,?,?,?,?,NULL,?,?)",
+                (
+                    tid,
+                    session["id"],
+                    body.answer_en,
+                    "confirmed_reference",
+                    exercise["id"],
+                    now(),
+                    "exact",
+                ),
+            )
+            db.execute(
+                "UPDATE turns SET unable_to_answer=? WHERE id=?", (body.unable_to_answer, tid)
             )
             if turn["ordinal"] == 6:
                 db.execute("UPDATE sessions SET status='completed' WHERE id=?", (session["id"],))
-            return row(db, "turns", tid)
+            return turn_row(db, tid)
 
         return idempotent(session["id"], f"confirm:{tid}", body, operation)
 
     @app.post("/v1/exercises/{exercise_id}/audio", status_code=201)
     async def upload_audio(
-        exercise_id: UUID, file: UploadFile = File(...), capture: str = Form("{}")
+        exercise_id: UUID,
+        file: UploadFile = File(...),
+        capture: str = Form("{}"),
+        client_attempt_key: str | None = Form(None),
+        input_kind: str = Form("unknown"),
     ):
         eid = str(exercise_id)
+        if input_kind not in {"shadowing_overlap", "isolated_repeat", "unknown"}:
+            raise APIError(422, "input_kind", "録音種別が不正です。")
+        if client_attempt_key is not None:
+            client_attempt_key = client_attempt_key.strip()
+            if not client_attempt_key or len(client_attempt_key) > 100:
+                raise APIError(422, "attempt_key", "録音キーが不正です。")
         with database.connect() as db:
             exercise = row(db, "exercises", eid)
             turn, session = owner_of_turn(db, exercise["turn_id"])
@@ -611,6 +631,32 @@ def create_app(settings=None):
         await file.close()
         if not data or len(data) > audio.MAX_UPLOAD:
             raise APIError(413, "upload_limit", "空でない10 MiB以下の録音を使用してください。")
+        content_hash = digest_bytes(data)
+        if client_attempt_key:
+            with database.connect() as db:
+                existing = db.execute(
+                    """SELECT a.id AS attempt_id,a.audio_id,a.exercise_id,a.audio_meta_json,
+                              af.content_hash
+                       FROM attempts a LEFT JOIN audio_files af ON af.id=a.audio_id
+                       WHERE a.session_id=? AND a.client_attempt_key=?""",
+                    (session["id"], client_attempt_key),
+                ).fetchone()
+                if existing:
+                    if (
+                        existing["exercise_id"] != eid
+                        or existing["audio_id"] is None
+                        or existing["content_hash"] != content_hash
+                    ):
+                        raise APIError(
+                            409,
+                            "attempt_key_conflict",
+                            "同じ録音キーが別の内容で使用されています。",
+                        )
+                    return {
+                        "attempt_id": existing["attempt_id"],
+                        "audio_id": existing["audio_id"],
+                        "audio_meta": json.loads(existing["audio_meta_json"]),
+                    }
         media_type = (file.content_type or "").split(";")[0]
         extension = {
             "audio/webm": ".webm",
@@ -623,21 +669,53 @@ def create_app(settings=None):
         if extension is None:
             raise APIError(415, "audio_type", "WebM、Ogg、MP4、WAVの音声を使用してください。")
         audio_id, attempt_id = uid(), uid()
+        temp_path = audio_root / (audio_id + ".part" + extension)
         path = audio_root / (audio_id + extension)
-        path.write_bytes(data)
+        temp_path.write_bytes(data)
         try:
-            metadata = await asyncio.to_thread(audio.inspect_upload, path)
-            metadata.update({"capture": capture_data, "mime_type": media_type, "bytes": len(data)})
+            media = await asyncio.to_thread(audio.inspect_upload, temp_path)
+            metadata = {
+                **media,
+                "capture": capture_data,
+                "mime_type": media_type,
+                "bytes": len(data),
+            }
+            temp_path.replace(path)
             with database.connect() as db:
                 db.execute(
-                    "INSERT INTO audio_files VALUES (?,?,?,?,NULL)",
-                    (audio_id, session["id"], path.name, media_type),
+                    "INSERT INTO audio_files (id,session_id,filename,media_type,cache_key,kind,storage_key,content_hash,media_json,save_status) VALUES (?,?,?,?,NULL,?,?,?,?,?)",
+                    (
+                        audio_id,
+                        session["id"],
+                        path.name,
+                        media_type,
+                        "recording",
+                        path.name,
+                        content_hash,
+                        encode(media),
+                        "ready",
+                    ),
                 )
                 db.execute(
-                    "INSERT INTO attempts VALUES (?,?,?,?,?,?,?)",
-                    (attempt_id, eid, audio_id, None, encode(metadata), None, now()),
+                    "INSERT INTO attempts (id,session_id,exercise_id,audio_id,dictation_text,audio_meta_json,result_json,created_at,client_attempt_key,input_kind,capture_requested_json,capture_actual_json,file_status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        attempt_id,
+                        session["id"],
+                        eid,
+                        audio_id,
+                        None,
+                        encode(metadata),
+                        None,
+                        now(),
+                        client_attempt_key,
+                        input_kind,
+                        encode(capture_data),
+                        encode(media),
+                        "ready",
+                    ),
                 )
         except Exception:
+            temp_path.unlink(missing_ok=True)
             path.unlink(missing_ok=True)
             raise
         return {"attempt_id": attempt_id, "audio_id": audio_id, "audio_meta": metadata}
@@ -649,12 +727,29 @@ def create_app(settings=None):
             exercise = row(db, "exercises", str(exercise_id))
             if exercise["mode"] != "dictation":
                 raise APIError(409, "wrong_mode", "dictationモードの練習を作成してください。")
+            _, session = owner_of_turn(db, exercise["turn_id"])
             result = dictation.compare(exercise["reference_text"], body.typed_text)
             db.execute(
-                "INSERT INTO attempts VALUES (?,?,?,?,?,?,?)",
-                (identity, str(exercise_id), None, body.typed_text, "{}", encode(result), now()),
+                "INSERT INTO attempts (id,session_id,exercise_id,audio_id,dictation_text,audio_meta_json,result_json,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    identity,
+                    session["id"],
+                    str(exercise_id),
+                    None,
+                    body.typed_text,
+                    "{}",
+                    encode(result),
+                    now(),
+                ),
             )
             return {"attempt_id": identity, "result": result}
+
+    def assessment_evidence(result, input_kind):
+        if input_kind == "shadowing_overlap":
+            return "insufficient_evidence"
+        if result.get("status") == "unavailable":
+            return "unavailable"
+        return "uncalibrated"
 
     @app.post("/v1/attempts/{attempt_id}/assess")
     def assess(attempt_id: UUID, body: RequestInput):
@@ -663,23 +758,101 @@ def create_app(settings=None):
             attempt = row(db, "attempts", identity)
             exercise = row(db, "exercises", attempt["exercise_id"])
             turn, session = owner_of_turn(db, exercise["turn_id"])
-
-        def operation(db):
             if not attempt["audio_id"]:
                 raise APIError(409, "no_audio", "dictationを発音評価することはできません。")
             record, path = saved_audio(db, attempt["audio_id"])
             if record["session_id"] != session["id"]:
                 raise APIError(409, "session_mismatch", "音声のセッションが一致しません。")
+        payload = body.model_dump(mode="json")
+        request_id = str(payload["request_id"])
+        payload_hash = digest(encode(payload))
+        action = f"assess:{identity}"
+        run_id = uid()
+        config_snapshot = {
+            "provider": settings.pronunciation_provider,
+            "provider_version": None,
+            "input_kind": attempt["input_kind"],
+            "echo_cancellation": json.loads(attempt["capture_requested_json"] or "{}").get(
+                "echoCancellation"
+            ),
+        }
+        with database.connect() as db:
+            existing = db.execute(
+                "SELECT * FROM requests WHERE request_id=?", (request_id,)
+            ).fetchone()
+            if existing:
+                if (
+                    existing["action"] != action
+                    or existing["payload_hash"] != payload_hash
+                    or existing["session_id"] != session["id"]
+                ):
+                    raise APIError(
+                        409, "request_conflict", "このrequest_idは別の入力に使用されています。"
+                    )
+                if existing["status"] == "done":
+                    return json.loads(existing["result_json"])
+                raise APIError(
+                    409,
+                    existing["status"],
+                    "処理中または中断済みの要求です。結果不明の再試行には新しいIDが必要です。",
+                    True,
+                )
+            db.execute(
+                "INSERT INTO requests (request_id,session_id,action,payload_hash,payload_json,status,created_at) VALUES (?,?,?,?,?,'processing',?)",
+                (request_id, session["id"], action, payload_hash, encode(payload), now()),
+            )
+            db.execute(
+                "INSERT INTO assessment_runs (id,attempt_id,session_id,input_kind,execution_status,evidence_status,provider,model_version,config_json,reference_hash,result_json,error_code,error_message,request_id,started_at,finished_at,created_at) VALUES (?,?,?,?,'running','pending',?,?,?,?,NULL,NULL,NULL,?,?,NULL,?)",
+                (
+                    run_id,
+                    identity,
+                    session["id"],
+                    attempt["input_kind"],
+                    settings.pronunciation_provider,
+                    None,
+                    encode(config_snapshot),
+                    exercise["reference_hash"],
+                    request_id,
+                    now(),
+                    now(),
+                ),
+            )
+        try:
             result = pronunciation.assess(
                 path,
                 exercise["reference_text"],
                 settings.pronunciation_provider,
                 json.loads(attempt["audio_meta_json"]),
             )
-            db.execute("UPDATE attempts SET result_json=? WHERE id=?", (encode(result), identity))
-            return result
-
-        return idempotent(session["id"], f"assess:{identity}", body, operation)
+        except Exception as exc:
+            code = getattr(exc, "body", {}).get("code", type(exc).__name__)
+            with database.connect() as db:
+                db.execute(
+                    "UPDATE assessment_runs SET execution_status='failed',evidence_status=NULL,error_code=?,error_message=?,finished_at=? WHERE id=?",
+                    (code, "評価器の実行に失敗しました。", now(), run_id),
+                )
+                db.execute("UPDATE requests SET status='failed' WHERE request_id=?", (request_id,))
+            raise
+        with database.connect() as db:
+            session_row = db.execute(
+                "SELECT deletion_status FROM sessions WHERE id=?", (session["id"],)
+            ).fetchone()
+            if session_row is None or session_row["deletion_status"] != "active":
+                db.execute(
+                    "UPDATE assessment_runs SET execution_status='interrupted',finished_at=? WHERE id=?",
+                    (now(), run_id),
+                )
+                db.execute("UPDATE requests SET status='failed' WHERE request_id=?", (request_id,))
+                raise APIError(409, "session_deleting", "削除中のセッションです。")
+            db.execute(
+                "UPDATE assessment_runs SET execution_status='succeeded',evidence_status=?,result_json=?,finished_at=? WHERE id=?",
+                (assessment_evidence(result, attempt["input_kind"]), encode(result), now(), run_id),
+            )
+            db.execute(
+                "UPDATE requests SET status='done',result_json=? WHERE request_id=?",
+                (encode(result), request_id),
+            )
+        return result
 
     @app.get("/v1/speech-models")
     def speech_models():
@@ -779,8 +952,17 @@ def create_app(settings=None):
         try:
             with database.connect() as db:
                 db.execute(
-                    "INSERT INTO audio_files VALUES (?,?,?,?,?)",
-                    (audio_id, session["id"], path.name, "audio/wav", cache_key),
+                    "INSERT INTO audio_files (id,session_id,filename,media_type,cache_key,kind,storage_key,content_hash,media_json,save_status) VALUES (?,?,?,?,?,?,?,?,NULL,'ready')",
+                    (
+                        audio_id,
+                        session["id"],
+                        path.name,
+                        "audio/wav",
+                        cache_key,
+                        "tts",
+                        path.name,
+                        digest_bytes(data),
+                    ),
                 )
                 assistance(db, turn["id"], exercise_id, "tts_requested")
         except Exception:
@@ -823,22 +1005,12 @@ def create_app(settings=None):
     def delete_session(session_id: UUID):
         with database.connect() as db:
             row(db, "sessions", str(session_id))
-            files = list(
-                db.execute(
-                    "SELECT filename FROM audio_files WHERE session_id=?", (str(session_id),)
-                )
-            )
-            # attempts must disappear before their audio foreign keys.
-            db.execute(
-                "DELETE FROM attempts WHERE exercise_id IN (SELECT e.id FROM exercises e JOIN turns t ON t.id=e.turn_id WHERE t.session_id=?)",
-                (str(session_id),),
-            )
-            db.execute("DELETE FROM sessions WHERE id=?", (str(session_id),))
-            for record in files:
-                path = (audio_root / record["filename"]).resolve()
-                if path.parent == audio_root:
-                    path.unlink(missing_ok=True)
+        purge_session(database, str(session_id))
         return {"deleted": True}
+
+    @app.get("/v1/maintenance/audio")
+    def audio_maintenance():
+        return reconcile_audio_files(database, dry_run=True)
 
     install_conversation(app, database, providers, tts)
 

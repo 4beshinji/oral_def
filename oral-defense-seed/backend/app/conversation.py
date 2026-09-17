@@ -7,7 +7,7 @@ from uuid import UUID
 from pydantic import Field
 
 from . import contexts
-from .db import digest, encode, now, row, uid
+from .db import digest, encode, now, row, turn_row, turns_for, uid
 from .errors import APIError
 from .schemas import Input, RequestInput, TTSInput
 
@@ -39,6 +39,8 @@ def install_conversation(app, database, providers, tts):
 
     def current(db, sid, revision):
         state = flow(db, sid)
+        if row(db, "sessions", sid)["deletion_status"] != "active":
+            raise APIError(409, "session_deleting", "削除中のセッションです。")
         if state["status"] != "running" or state["revision"] != revision:
             raise APIError(
                 409, "stale_operation", "停止済み、または古い会話操作です。再開してください。"
@@ -85,7 +87,7 @@ def install_conversation(app, database, providers, tts):
                 "model_playback",
             }:
                 raise APIError(409, "pause_required", "未確定のお手本を停止中に編集してください。")
-            turn = row(db, "turns", state["turn_id"])
+            turn = turn_row(db, state["turn_id"])
             if turn["confirmed_answer_en"] is not None:
                 raise APIError(409, "already_confirmed", "確定済みの参照文は変更できません。")
             invalidate(db, sid)
@@ -94,9 +96,10 @@ def install_conversation(app, database, providers, tts):
             if body.text is not None:
                 eid = uid()
                 db.execute(
-                    "INSERT INTO exercises VALUES (?,?,?,?,?,?,?)",
+                    "INSERT INTO exercises (id,session_id,turn_id,mode,reference_text,reference_hash,reference_origin,created_at) VALUES (?,?,?,?,?,?,?,?)",
                     (
                         eid,
+                        turn["session_id"],
                         turn["id"],
                         "listen_repeat",
                         body.text,
@@ -121,12 +124,7 @@ def install_conversation(app, database, providers, tts):
             state = current(db, sid, body.revision)
             session = row(db, "sessions", sid)
             saved = json.loads(session["settings_json"])
-            turns = [
-                dict(t)
-                for t in db.execute(
-                    "SELECT * FROM turns WHERE session_id=? ORDER BY ordinal", (sid,)
-                )
-            ]
+            turns = turns_for(db, sid)
             history = [
                 dict(h)
                 for h in db.execute(
@@ -220,12 +218,12 @@ def install_conversation(app, database, providers, tts):
                     )
                 tid, eid = state["turn_id"], uid()
                 db.execute(
-                    "INSERT INTO coach_messages VALUES (?,?,?,?,?,?,?,?)",
+                    "INSERT INTO coach_messages (id,session_id,turn_id,level,user_note,draft,response_json,created_at) VALUES (?,?,?,?,?,?,?,?)",
                     (uid(), sid, tid, role, "", "", encode(result), now()),
                 )
                 db.execute(
-                    "INSERT INTO exercises VALUES (?,?,?,?,?,?,?)",
-                    (eid, tid, "listen_repeat", answer, digest(answer), "coach", now()),
+                    "INSERT INTO exercises (id,session_id,turn_id,mode,reference_text,reference_hash,reference_origin,created_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (eid, sid, tid, "listen_repeat", answer, digest(answer), "coach", now()),
                 )
                 db.execute(
                     "UPDATE conversations SET reference_id=?,audio_id=NULL,stage='model_playback',revision=revision+1 WHERE id=?",
@@ -250,9 +248,7 @@ def install_conversation(app, database, providers, tts):
                 if state["stage"] == "model_playback"
                 else None
             )
-            text = (
-                ref["reference_text"] if ref else row(db, "turns", state["turn_id"])["question_en"]
-            )
+            text = ref["reference_text"] if ref else turn_row(db, state["turn_id"])["question_en"]
             identity = uid()
             invalidate(db, sid)
             revision = state["revision"] + 1
@@ -350,11 +346,22 @@ def install_conversation(app, database, providers, tts):
                     or ref["reference_hash"] != playback["reference_hash"]
                 ):
                     raise APIError(409, "reference_mismatch", "参照文の版が一致しません。")
-                changed = db.execute(
-                    "UPDATE turns SET confirmed_answer_en=?,submitted_via='shadowing_playback' WHERE id=? AND confirmed_answer_en IS NULL",
-                    (ref["reference_text"], state["turn_id"]),
+                inserted = db.execute(
+                    """INSERT INTO turn_submissions (turn_id,session_id,answer_text,submitted_via,source_exercise_id,source_playback_id,committed_at,provenance_status)
+                       SELECT ?,?,?,?,?,?,?,'exact'
+                       WHERE NOT EXISTS (SELECT 1 FROM turn_submissions WHERE turn_id=?)""",
+                    (
+                        state["turn_id"],
+                        sid,
+                        ref["reference_text"],
+                        "shadowing_playback",
+                        ref["id"],
+                        pid,
+                        now(),
+                        state["turn_id"],
+                    ),
                 ).rowcount
-                if changed != 1:
+                if inserted != 1:
                     raise APIError(409, "already_confirmed", "返答は確定済みです。")
                 stage = "question_generation"
             db.execute("UPDATE conversation_playbacks SET status='completed' WHERE id=?", (pid,))

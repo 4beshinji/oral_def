@@ -312,6 +312,8 @@ def test_old_session_migration_preserves_mock(tmp_path, legacy_without_text_mode
         if legacy_without_text_model:
             del saved["text_model"]
         db.execute("UPDATE sessions SET settings_json=? WHERE id=?", (json.dumps(saved), sid))
+        # Simulate a session whose settings JSON predates the backfill migration.
+        db.execute("DELETE FROM schema_migrations WHERE version=2")
     settings.text_provider = "opencode-go"
     settings.text_model = "fixture-chat"
     with TestClient(create_app(settings), base_url="http://127.0.0.1:8000") as client:
