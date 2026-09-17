@@ -15,6 +15,7 @@ from .config import ROOT, Settings
 from .conversation import install_conversation
 from .db import (
     Database,
+    backup_database,
     digest,
     digest_bytes,
     encode,
@@ -25,6 +26,7 @@ from .db import (
     turn_row,
     turns_for,
     uid,
+    verify_backup,
 )
 from .documents import install_documents
 from .errors import APIError
@@ -332,14 +334,39 @@ def create_app(settings=None):
                 )
             ]
 
-    def snapshot(session_id):
-        with database.connect() as db:
+    def snapshot(session_id, turn_limit=50):
+        with database.read_snapshot() as db:
             session = row(db, "sessions", session_id)
             session["pack_snapshot"] = json.loads(session.pop("pack_snapshot_json"))
             session["settings"] = json.loads(session.pop("settings_json"))
             flow = db.execute("SELECT * FROM conversations WHERE id=?", (session_id,)).fetchone()
             session["conversation"] = dict(flow) if flow else None
-            session["turns"] = turns_for(db, session_id)
+            total = db.execute(
+                "SELECT count(*) FROM turns WHERE session_id=?", (session_id,)
+            ).fetchone()[0]
+            if turn_limit is None:
+                ids = [
+                    record["id"]
+                    for record in db.execute(
+                        "SELECT id FROM turns WHERE session_id=? ORDER BY ordinal", (session_id,)
+                    )
+                ]
+            else:
+                ids = [
+                    record["id"]
+                    for record in db.execute(
+                        "SELECT id FROM turns WHERE session_id=? ORDER BY ordinal DESC LIMIT ?",
+                        (session_id, turn_limit),
+                    )
+                ][::-1]
+            session["turns_total"] = total
+            session["turns_has_more"] = len(ids) < total
+            session["turns_before"] = (
+                db.execute("SELECT MIN(ordinal) FROM turns WHERE id=?", (ids[0],)).fetchone()[0]
+                if ids and session["turns_has_more"]
+                else None
+            )
+            session["turns"] = [turn_row(db, turn_id) for turn_id in ids]
             for turn in session["turns"]:
                 turn["coach_messages"] = []
                 for value in db.execute(
@@ -444,8 +471,28 @@ def create_app(settings=None):
             return session
 
     @app.get("/v1/sessions/{session_id}")
-    def get_session(session_id: UUID):
-        return snapshot(str(session_id))
+    def get_session(session_id: UUID, turns: int = 50):
+        return snapshot(str(session_id), turn_limit=max(1, min(turns, 200)))
+
+    @app.get("/v1/sessions/{session_id}/turns")
+    def list_turns(session_id: UUID, before: int | None = None, limit: int = 20):
+        sid = str(session_id)
+        size = max(1, min(limit, 100))
+        with database.read_snapshot() as db:
+            row(db, "sessions", sid)
+            if before is None:
+                records = db.execute(
+                    "SELECT id FROM turns WHERE session_id=? ORDER BY ordinal DESC LIMIT ?",
+                    (sid, size),
+                ).fetchall()
+            else:
+                records = db.execute(
+                    "SELECT id FROM turns WHERE session_id=? AND ordinal<? ORDER BY ordinal DESC LIMIT ?",
+                    (sid, before, size),
+                ).fetchall()
+            items = [turn_row(db, record["id"]) for record in records][::-1]
+        next_before = items[0]["ordinal"] if items and len(records) == size else None
+        return {"turns": items, "next_before": next_before}
 
     @app.put("/v1/sessions/{session_id}/text-model")
     def select_text_model(session_id: UUID, body: ModelInput):
@@ -1073,11 +1120,13 @@ def create_app(settings=None):
 
     @app.get("/v1/sessions/{session_id}/export")
     def export_session(session_id: UUID):
+        # Share export: full public conversation, no secrets or local paths.
         payload = {
             "schema_version": "1.0",
+            "mode": "share",
             "exported_at": now(),
             "providers": capabilities(),
-            "session": snapshot(str(session_id)),
+            "session": snapshot(str(session_id), turn_limit=None),
         }
         return JSONResponse(
             payload,
@@ -1096,6 +1145,21 @@ def create_app(settings=None):
     @app.get("/v1/maintenance/audio")
     def audio_maintenance():
         return reconcile_audio_files(database, dry_run=True)
+
+    @app.post("/v1/maintenance/backup", status_code=201)
+    def create_backup():
+        from datetime import datetime, timezone
+
+        name = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        destination = settings.data_dir / "backups" / name
+        manifest = backup_database(database, destination)
+        return {"name": name, "manifest": manifest, "verify": verify_backup(destination)}
+
+    @app.get("/v1/maintenance/backup/{name}")
+    def check_backup(name: str):
+        if "/" in name or "\\" in name or ".." in name:
+            raise APIError(422, "invalid_name", "backup名が不正です。")
+        return verify_backup(settings.data_dir / "backups" / name)
 
     install_conversation(app, database, providers, tts)
     install_documents(app, database, settings)

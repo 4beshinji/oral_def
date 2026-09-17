@@ -8,6 +8,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from uuid import uuid4
 
 log = logging.getLogger("drill.db")
@@ -871,6 +872,134 @@ class Database:
                 yield db
         finally:
             db.close()
+
+    @contextmanager
+    def read_snapshot(self):
+        """Hold one read transaction so every SELECT sees the same point in time."""
+        db = sqlite3.connect(self.path, timeout=10)
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA busy_timeout=10000")
+        db.execute("PRAGMA foreign_keys=ON")
+        try:
+            db.execute("BEGIN")
+            yield db
+        finally:
+            db.rollback()
+            db.close()
+
+    @contextmanager
+    def write_transaction(self):
+        """Short BEGIN IMMEDIATE section; commit on success, rollback on error."""
+        db = sqlite3.connect(self.path, timeout=10)
+        db.row_factory = sqlite3.Row
+        db.execute("PRAGMA busy_timeout=10000")
+        db.execute("PRAGMA foreign_keys=ON")
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            yield db
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+
+def backup_database(database, destination):
+    """Consistent SQLite snapshot plus an external-file manifest, restore-ready."""
+    destination = Path(destination)
+    (destination / "audio").mkdir(parents=True, exist_ok=True)
+    target = destination / "drill.sqlite3"
+    with database.connect() as source:
+        copy = sqlite3.connect(target)
+        try:
+            source.backup(copy)
+        finally:
+            copy.close()
+    files = []
+    with database.connect() as db:
+        records = [
+            dict(record)
+            for record in db.execute(
+                "SELECT id,storage_key,filename,kind,save_status FROM audio_files"
+            )
+        ]
+        schema_versions = [
+            record["version"] for record in db.execute("SELECT version FROM schema_migrations")
+        ]
+    for record in records:
+        key = record["storage_key"] or record["filename"]
+        path = (database.audio_dir / key).resolve()
+        if path.parent != database.audio_dir or not path.is_file():
+            if record["save_status"] == "ready":
+                raise MigrationError(f"ready音声ファイルが見つかりません: {key}")
+            continue
+        data = path.read_bytes()
+        (destination / "audio" / Path(key).name).write_bytes(data)
+        files.append(
+            {
+                "storage_key": key,
+                "audio_id": record["id"],
+                "kind": record["kind"],
+                "bytes": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
+        )
+    manifest = {
+        "schema_version": "1.0",
+        "sqlite_version": database.sqlite_version,
+        "migration_versions": sorted(schema_versions),
+        "files": files,
+    }
+    (destination / "manifest.json").write_text(encode(manifest))
+    return manifest
+
+
+def verify_backup(destination):
+    """Validate a backup before it is trusted for restore."""
+    destination = Path(destination)
+    report = {"ok": True, "errors": [], "missing": [], "extra": []}
+    database_file = destination / "drill.sqlite3"
+    manifest_file = destination / "manifest.json"
+    if not database_file.is_file() or not manifest_file.is_file():
+        report["ok"] = False
+        report["errors"].append("backup_incomplete")
+        return report
+    manifest = json.loads(manifest_file.read_text())
+    connection = sqlite3.connect(database_file)
+    try:
+        connection.row_factory = sqlite3.Row
+        if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
+            report["ok"] = False
+            report["errors"].append("integrity_check_failed")
+        if list(connection.execute("PRAGMA foreign_key_check")):
+            report["ok"] = False
+            report["errors"].append("foreign_key_violation")
+        versions = sorted(
+            record["version"]
+            for record in connection.execute("SELECT version FROM schema_migrations")
+        )
+        if versions != manifest.get("migration_versions"):
+            report["ok"] = False
+            report["errors"].append("schema_version_mismatch")
+    finally:
+        connection.close()
+    expected = {entry["storage_key"] for entry in manifest["files"]}
+    for entry in manifest["files"]:
+        path = destination / "audio" / Path(entry["storage_key"]).name
+        if not path.is_file():
+            report["missing"].append(entry["storage_key"])
+            continue
+        data = path.read_bytes()
+        if len(data) != entry["bytes"] or hashlib.sha256(data).hexdigest() != entry["sha256"]:
+            report["ok"] = False
+            report["errors"].append("file_hash_mismatch")
+    for path in (destination / "audio").iterdir() if (destination / "audio").is_dir() else []:
+        if path.name not in {Path(key).name for key in expected}:
+            report["extra"].append(path.name)
+    if report["missing"]:
+        report["ok"] = False
+    return report
 
 
 def row(db, table, identity):
