@@ -630,6 +630,195 @@ class Migration:
         return hashlib.sha256(f"{self.version}\x00{self.name}\x00{source}".encode()).hexdigest()
 
 
+# These predicates apply both to legacy preflight and to new writes. Composite
+# session keys alone cannot detect a reference from another turn in that session.
+_TURN_OWNERSHIP_CHECKS = {
+    "conversation_playbacks": """NEW.reference_id IS NOT NULL AND NOT EXISTS
+        (SELECT 1 FROM exercises e
+         WHERE e.id=NEW.reference_id AND e.turn_id=NEW.turn_id)""",
+    "assistance": """NEW.exercise_id IS NOT NULL AND NOT EXISTS
+        (SELECT 1 FROM exercises e
+         WHERE e.id=NEW.exercise_id AND e.turn_id=NEW.turn_id)""",
+    "conversations": """(NEW.reference_id IS NOT NULL AND NOT EXISTS
+        (SELECT 1 FROM exercises e
+         WHERE e.id=NEW.reference_id AND e.turn_id=NEW.turn_id))
+        OR (NEW.playback_id IS NOT NULL AND NOT EXISTS
+        (SELECT 1 FROM conversation_playbacks p WHERE p.id=NEW.playback_id
+         AND p.turn_id=NEW.turn_id AND p.reference_id IS NEW.reference_id))""",
+    "turn_submissions": """(NEW.source_exercise_id IS NOT NULL AND NOT EXISTS
+        (SELECT 1 FROM exercises e
+         WHERE e.id=NEW.source_exercise_id AND e.turn_id=NEW.turn_id))
+        OR (NEW.source_playback_id IS NOT NULL AND NOT EXISTS
+        (SELECT 1 FROM conversation_playbacks p WHERE p.id=NEW.source_playback_id
+         AND p.turn_id=NEW.turn_id AND p.reference_id IS NEW.source_exercise_id))""",
+}
+
+_TURN_OWNERSHIP_DDL = tuple(
+    f"""CREATE TRIGGER {table}_turn_owner_{operation.lower()}
+        BEFORE {operation} ON {table} WHEN {predicate}
+        BEGIN SELECT RAISE(ABORT, 'reference turn ownership mismatch'); END"""
+    for table, predicate in _TURN_OWNERSHIP_CHECKS.items()
+    for operation in ("INSERT", "UPDATE")
+) + (
+    """CREATE TRIGGER playback_source_immutable
+        BEFORE UPDATE OF id,session_id,turn_id,reference_id,reference_hash,revision,
+        stage,audio_id,tts_settings_json ON conversation_playbacks
+        BEGIN SELECT RAISE(ABORT, 'playback source is immutable'); END""",
+    """CREATE TRIGGER turn_owner_immutable BEFORE UPDATE OF id,session_id ON turns
+        BEGIN SELECT RAISE(ABORT, 'turn ownership is immutable'); END""",
+    """CREATE TRIGGER exercise_id_immutable BEFORE UPDATE OF id ON exercises
+        BEGIN SELECT RAISE(ABORT, 'exercise identity is immutable'); END""",
+)
+
+
+_GENERATION_DDL = tuple(
+    statement
+    for table in ("turns", "coach_messages", "exercises", "audio_files")
+    for statement in (
+        f"ALTER TABLE {table} ADD COLUMN generation_json TEXT CHECK(generation_json IS NULL OR json_valid(generation_json))",
+        f"""CREATE TRIGGER {table}_generation_immutable
+        BEFORE UPDATE OF generation_json ON {table} WHEN OLD.generation_json IS NOT NULL
+        BEGIN SELECT RAISE(ABORT, 'generation provenance is immutable'); END""",
+    )
+)
+
+
+def _free_speech_schema(db, context):
+    """Add independent audio/transcription provenance and a real manual origin."""
+    preserved = [
+        item[0]
+        for item in db.execute(
+            """SELECT sql FROM sqlite_master
+               WHERE type IN ('index','trigger') AND tbl_name IN
+                 ('turns','conversations','turn_submissions') AND sql IS NOT NULL
+               ORDER BY CASE type WHEN 'index' THEN 0 ELSE 1 END, name"""
+        )
+    ]
+    db.execute(
+        """CREATE TABLE free_speech_recordings (
+        id TEXT NOT NULL PRIMARY KEY, session_id TEXT NOT NULL, turn_id TEXT NOT NULL,
+        audio_id TEXT NOT NULL, client_key TEXT NOT NULL,
+        capture_json TEXT NOT NULL CHECK(json_valid(capture_json)),
+        audio_meta_json TEXT NOT NULL CHECK(json_valid(audio_meta_json)), created_at TEXT NOT NULL,
+        UNIQUE(session_id,client_key), UNIQUE(id,session_id),
+        FOREIGN KEY(turn_id,session_id) REFERENCES turns(id,session_id) ON DELETE CASCADE,
+        FOREIGN KEY(audio_id,session_id) REFERENCES audio_files(id,session_id) ON DELETE CASCADE)"""
+    )
+    db.execute(
+        """CREATE TABLE free_speech_transcriptions (
+        id TEXT NOT NULL PRIMARY KEY, session_id TEXT NOT NULL, recording_id TEXT NOT NULL,
+        request_id TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL CHECK(status IN
+          ('running','succeeded','no_speech','failed','interrupted')),
+        text TEXT, result_json TEXT CHECK(result_json IS NULL OR json_valid(result_json)),
+        error_code TEXT, created_at TEXT NOT NULL, finished_at TEXT,
+        UNIQUE(id,session_id),
+        FOREIGN KEY(recording_id,session_id)
+          REFERENCES free_speech_recordings(id,session_id) ON DELETE CASCADE)"""
+    )
+    db.execute(
+        """CREATE TABLE turns_v11 (
+        id TEXT NOT NULL PRIMARY KEY,
+        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        ordinal INTEGER NOT NULL CHECK(ordinal>=1),
+        question_en TEXT NOT NULL, basis_note TEXT NOT NULL, confirmed_answer_en TEXT,
+        submitted_via TEXT CHECK(submitted_via IS NULL OR submitted_via IN
+          ('shadowing_playback','confirmed_reference','free_speech_transcript',
+           'free_speech_manual')),
+        follow_up_count INTEGER NOT NULL CHECK(follow_up_count>=0),
+        unable_to_answer INTEGER NOT NULL DEFAULT 0 CHECK(unable_to_answer IN (0,1)),
+        generation_json TEXT CHECK(generation_json IS NULL OR json_valid(generation_json)),
+        UNIQUE(session_id,ordinal), UNIQUE(id,session_id))"""
+    )
+    db.execute(
+        """CREATE TABLE conversations_v11 (
+        id TEXT NOT NULL PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+        mode TEXT NOT NULL DEFAULT 'shadowing' CHECK(mode IN ('shadowing','free_speech')),
+        status TEXT NOT NULL DEFAULT 'paused' CHECK(status IN ('paused','running','ended')),
+        stage TEXT NOT NULL DEFAULT 'question_generation' CHECK(stage IN
+          ('question_generation','question_playback','coach_generation','model_playback',
+           'free_speech_input')),
+        revision INTEGER NOT NULL DEFAULT 0 CHECK(revision>=0),
+        turn_id TEXT, reference_id TEXT, audio_id TEXT, playback_id TEXT,
+        FOREIGN KEY(turn_id,id) REFERENCES turns(id,session_id) ON DELETE CASCADE,
+        FOREIGN KEY(reference_id,id) REFERENCES exercises(id,session_id) ON DELETE CASCADE,
+        FOREIGN KEY(audio_id,id) REFERENCES audio_files(id,session_id) ON DELETE CASCADE,
+        FOREIGN KEY(playback_id,id) REFERENCES conversation_playbacks(id,session_id)
+          ON DELETE CASCADE)"""
+    )
+    db.execute(
+        """CREATE TABLE turn_submissions_v11 (
+        turn_id TEXT NOT NULL PRIMARY KEY, session_id TEXT NOT NULL, answer_text TEXT NOT NULL,
+        submitted_via TEXT NOT NULL CHECK(submitted_via IN
+          ('shadowing_playback','confirmed_reference','free_speech_transcript',
+           'free_speech_manual','legacy_unknown')),
+        source_exercise_id TEXT, source_playback_id TEXT,
+        source_recording_id TEXT, source_transcription_id TEXT,
+        committed_at TEXT,
+        provenance_status TEXT NOT NULL CHECK(provenance_status IN
+          ('exact','legacy_missing','legacy_ambiguous')),
+        FOREIGN KEY(turn_id,session_id) REFERENCES turns(id,session_id) ON DELETE CASCADE,
+        FOREIGN KEY(source_exercise_id,session_id)
+          REFERENCES exercises(id,session_id) ON DELETE CASCADE,
+        FOREIGN KEY(source_playback_id,session_id)
+          REFERENCES conversation_playbacks(id,session_id) ON DELETE CASCADE,
+        FOREIGN KEY(source_recording_id,session_id)
+          REFERENCES free_speech_recordings(id,session_id) ON DELETE CASCADE,
+        FOREIGN KEY(source_transcription_id,session_id)
+          REFERENCES free_speech_transcriptions(id,session_id) ON DELETE CASCADE)"""
+    )
+    db.execute(
+        """INSERT INTO turns_v11
+           SELECT id,session_id,ordinal,question_en,basis_note,confirmed_answer_en,
+             submitted_via,follow_up_count,unable_to_answer,generation_json FROM turns"""
+    )
+    db.execute(
+        """INSERT INTO conversations_v11
+           SELECT id,mode,status,stage,revision,turn_id,reference_id,audio_id,playback_id
+           FROM conversations"""
+    )
+    db.execute(
+        """INSERT INTO turn_submissions_v11
+           (turn_id,session_id,answer_text,submitted_via,source_exercise_id,
+            source_playback_id,source_recording_id,source_transcription_id,
+            committed_at,provenance_status)
+           SELECT turn_id,session_id,answer_text,submitted_via,source_exercise_id,
+             source_playback_id,NULL,NULL,committed_at,provenance_status
+           FROM turn_submissions"""
+    )
+    for table in ("turn_submissions", "conversations", "turns"):
+        db.execute(f"DROP TABLE {table}")
+    for table in ("turns", "conversations", "turn_submissions"):
+        db.execute(f"ALTER TABLE {table}_v11 RENAME TO {table}")
+    for statement in preserved:
+        db.execute(statement)
+    db.execute(
+        "CREATE INDEX free_speech_recordings_turn_idx ON free_speech_recordings(turn_id,session_id)"
+    )
+    db.execute(
+        """CREATE INDEX free_speech_transcriptions_recording_idx
+           ON free_speech_transcriptions(recording_id,session_id)"""
+    )
+    db.execute(
+        """CREATE TRIGGER turn_submissions_free_speech_immutable
+           BEFORE UPDATE OF source_recording_id,source_transcription_id ON turn_submissions
+           BEGIN SELECT RAISE(ABORT,'free speech source is immutable'); END"""
+    )
+    db.execute(
+        """CREATE TRIGGER turn_submissions_free_speech_owner
+           BEFORE INSERT ON turn_submissions WHEN
+             (NEW.source_recording_id IS NOT NULL AND NOT EXISTS
+               (SELECT 1 FROM free_speech_recordings r
+                WHERE r.id=NEW.source_recording_id AND r.turn_id=NEW.turn_id))
+             OR (NEW.source_transcription_id IS NOT NULL AND NOT EXISTS
+               (SELECT 1 FROM free_speech_transcriptions t
+                JOIN free_speech_recordings r ON r.id=t.recording_id
+                WHERE t.id=NEW.source_transcription_id
+                  AND r.id=NEW.source_recording_id AND r.turn_id=NEW.turn_id))
+           BEGIN SELECT RAISE(ABORT,'free speech source turn mismatch'); END"""
+    )
+
+
 MIGRATIONS = (
     Migration(1, "initial_schema", statements=INITIAL_SCHEMA),
     Migration(2, "session_settings_backfill", func=_backfill_session_settings),
@@ -651,6 +840,9 @@ MIGRATIONS = (
     Migration(6, "resumable_deletion", statements=_DELETION_DDL),
     Migration(7, "assessment_runs", statements=_ASSESSMENT_DDL, func=_backfill_assessment_runs),
     Migration(8, "session_documents", statements=_DOCUMENTS_DDL),
+    Migration(9, "turn_reference_ownership", statements=_TURN_OWNERSHIP_DDL),
+    Migration(10, "generation_provenance", statements=_GENERATION_DDL),
+    Migration(11, "free_speech_input", func=_free_speech_schema, disable_foreign_keys=True),
 )
 
 BASELINE_VERSION = 1
@@ -663,15 +855,29 @@ _ALLOWED_VALUES = {
         "shadowing_playback",
         "confirmed_reference",
         "free_speech_transcript",
+        "free_speech_manual",
     },
     ("conversations", "mode"): {"shadowing", "free_speech"},
     ("conversations", "status"): {"paused", "running", "ended"},
     (
         "conversations",
         "stage",
-    ): {"question_generation", "question_playback", "coach_generation", "model_playback"},
+    ): {
+        "question_generation",
+        "question_playback",
+        "coach_generation",
+        "model_playback",
+        "free_speech_input",
+    },
     ("conversation_playbacks", "status"): {"playing", "completed", "cancelled"},
     ("requests", "status"): {"processing", "done", "failed", "interrupted"},
+    ("free_speech_transcriptions", "status"): {
+        "running",
+        "succeeded",
+        "no_speech",
+        "failed",
+        "interrupted",
+    },
 }
 
 _JSON_COLUMNS = (
@@ -683,6 +889,9 @@ _JSON_COLUMNS = (
     ("conversation_playbacks", "tts_settings_json"),
     ("requests", "payload_json"),
     ("requests", "result_json"),
+    ("free_speech_recordings", "capture_json"),
+    ("free_speech_recordings", "audio_meta_json"),
+    ("free_speech_transcriptions", "result_json"),
 )
 
 
@@ -705,6 +914,13 @@ def inspect_database(db, audio_dir):
 
     if "sessions" not in tables:
         return issues
+
+    for table, predicate in _TURN_OWNERSHIP_CHECKS.items():
+        if table in tables:
+            for record in db.execute(
+                f"SELECT r.rowid FROM {table} r WHERE {predicate.replace('NEW.', 'r.')}"
+            ):
+                add("reference_turn_mismatch", {"table": table, "rowid": record[0]})
 
     try:
         for violation in db.execute("PRAGMA foreign_key_check"):
@@ -802,8 +1018,14 @@ class Database:
                 )
         pending = [m for m in MIGRATIONS if m.version not in applied]
         if pending:
-            for issue in inspect_database(db, self.audio_dir):
+            issues = inspect_database(db, self.audio_dir)
+            for issue in issues:
                 log.warning("DB移行前検査: %s", issue)
+            if any(issue["code"] == "reference_turn_mismatch" for issue in issues):
+                raise MigrationError(
+                    "別turnの参照文・再生への関連付けを検出しました。"
+                    "元データを保持して移行を停止しました。DB移行前検査を確認してください。"
+                )
         for migration in pending:
             self._apply(db, migration, {"speech_defaults": speech_defaults})
 
@@ -838,6 +1060,13 @@ class Database:
     def recover(self):
         """Resume non-schema work that a restart interrupted. Not a migration."""
         with self.connect() as db:
+            if db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='free_speech_transcriptions'"
+            ).fetchone():
+                db.execute(
+                    "UPDATE free_speech_transcriptions SET status='interrupted',finished_at=? WHERE status='running'",
+                    (now(),),
+                )
             db.execute("UPDATE requests SET status='interrupted' WHERE status='processing'")
             db.execute(
                 "UPDATE conversation_playbacks SET status='cancelled' WHERE status='playing'"
@@ -905,100 +1134,211 @@ class Database:
             db.close()
 
 
+def _backup_key(key):
+    return (
+        isinstance(key, str)
+        and key not in {"", ".", ".."}
+        and not any(character in key for character in ("/", "\\", "\x00"))
+    )
+
+
+def _file_fingerprint(path):
+    with path.open("rb") as stream:
+        checksum = hashlib.file_digest(stream, "sha256").hexdigest()
+        size = stream.tell()
+    return {"bytes": size, "sha256": checksum}
+
+
 def backup_database(database, destination):
-    """Consistent SQLite snapshot plus an external-file manifest, restore-ready."""
+    """Copy one DB snapshot and its immutable audio; publish a manifest last.
+
+    Files added after the SQLite copy are outside this backup. A concurrent
+    deletion or incomplete upload fails closed, so callers can retry explicitly.
+    Existing destinations are never overwritten, including incomplete backups.
+    """
     destination = Path(destination)
-    (destination / "audio").mkdir(parents=True, exist_ok=True)
+    destination.mkdir(parents=True, exist_ok=False)
+    (destination / "audio").mkdir()
     target = destination / "drill.sqlite3"
     with database.connect() as source:
         copy = sqlite3.connect(target)
         try:
             source.backup(copy)
+            # A portable DB file must not depend on unshipped WAL sidecars.
+            copy.execute("PRAGMA journal_mode=DELETE")
         finally:
             copy.close()
-    files = []
-    with database.connect() as db:
-        records = [
-            dict(record)
-            for record in db.execute(
-                "SELECT id,storage_key,filename,kind,save_status FROM audio_files"
-            )
-        ]
+    copy = sqlite3.connect(target)
+    try:
+        copy.row_factory = sqlite3.Row
+        records = [dict(record) for record in copy.execute("SELECT * FROM audio_files")]
         schema_versions = [
-            record["version"] for record in db.execute("SELECT version FROM schema_migrations")
+            record[0] for record in copy.execute("SELECT version FROM schema_migrations")
         ]
+        if copy.execute(
+            "SELECT 1 FROM sessions WHERE deletion_status='deleting' LIMIT 1"
+        ).fetchone():
+            raise MigrationError("削除処理完了後にbackupを再実行してください。")
+    finally:
+        copy.close()
+    files = []
     for record in records:
         key = record["storage_key"] or record["filename"]
-        path = (database.audio_dir / key).resolve()
-        if path.parent != database.audio_dir or not path.is_file():
-            if record["save_status"] == "ready":
-                raise MigrationError(f"ready音声ファイルが見つかりません: {key}")
-            continue
-        data = path.read_bytes()
-        (destination / "audio" / Path(key).name).write_bytes(data)
+        if not _backup_key(key) or record["save_status"] != "ready":
+            raise MigrationError("保存未完了または不正な音声参照があるためbackupできません。")
+        path = database.audio_dir / key
+        if path.is_symlink() or not path.is_file():
+            raise MigrationError("backup対象の音声ファイルが見つかりません。")
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            raise MigrationError("backup対象の音声ファイルを読み取れません。") from exc
+        checksum = hashlib.sha256(data).hexdigest()
+        if record["content_hash"] and checksum != record["content_hash"]:
+            raise MigrationError("音声の保存済みhashが一致しません。")
+        (destination / "audio" / key).write_bytes(data)
         files.append(
             {
                 "storage_key": key,
                 "audio_id": record["id"],
                 "kind": record["kind"],
                 "bytes": len(data),
-                "sha256": hashlib.sha256(data).hexdigest(),
+                "sha256": checksum,
             }
         )
     manifest = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
         "sqlite_version": database.sqlite_version,
         "migration_versions": sorted(schema_versions),
+        "database": _file_fingerprint(target),
         "files": files,
     }
-    (destination / "manifest.json").write_text(encode(manifest))
+    temporary = destination / "manifest.json.tmp"
+    temporary.write_text(encode(manifest))
+    temporary.replace(destination / "manifest.json")
     return manifest
 
 
+def _verify_backup_database(database_file, manifest, report):
+    connection = sqlite3.connect(
+        database_file.resolve().as_uri() + "?mode=ro&immutable=1", uri=True
+    )
+    try:
+        connection.row_factory = sqlite3.Row
+        if [r[0] for r in connection.execute("PRAGMA integrity_check")] != ["ok"]:
+            report["errors"].append("integrity_check_failed")
+        if list(connection.execute("PRAGMA foreign_key_check")):
+            report["errors"].append("foreign_key_violation")
+        migrations = list(connection.execute("SELECT * FROM schema_migrations ORDER BY version"))
+        versions = [record["version"] for record in migrations]
+        if versions != manifest.get("migration_versions"):
+            report["errors"].append("schema_version_mismatch")
+        known = {migration.version: migration for migration in MIGRATIONS}
+        if not versions or versions != list(range(1, len(versions) + 1)):
+            report["errors"].append("invalid_migration_sequence")
+        for record in migrations:
+            migration = known.get(record["version"])
+            if migration is None or (record["name"], record["checksum"]) != (
+                migration.name,
+                migration.checksum(),
+            ):
+                report["errors"].append("unsupported_migration")
+                break
+        if connection.execute(
+            "SELECT 1 FROM sessions WHERE deletion_status='deleting' LIMIT 1"
+        ).fetchone():
+            report["errors"].append("session_deleting")
+        records = list(
+            connection.execute(
+                "SELECT id,storage_key,filename,kind,save_status,content_hash FROM audio_files"
+            )
+        )
+        entries = {entry["audio_id"]: entry for entry in manifest["files"]}
+        if set(entries) != {record["id"] for record in records}:
+            report["errors"].append("audio_manifest_mismatch")
+        for record in records:
+            entry = entries.get(record["id"])
+            if record["save_status"] != "ready":
+                report["errors"].append("audio_not_ready")
+            if entry is None:
+                continue
+            if (entry["storage_key"], entry["kind"]) != (
+                record["storage_key"] or record["filename"],
+                record["kind"],
+            ) or (record["content_hash"] and entry["sha256"] != record["content_hash"]):
+                report["errors"].append("audio_manifest_mismatch")
+    finally:
+        connection.close()
+
+
 def verify_backup(destination):
-    """Validate a backup before it is trusted for restore."""
+    """Validate DB, manifest and files without changing or repairing the backup."""
     destination = Path(destination)
-    report = {"ok": True, "errors": [], "missing": [], "extra": []}
+    report = {"ok": False, "errors": [], "missing": [], "extra": []}
     database_file = destination / "drill.sqlite3"
     manifest_file = destination / "manifest.json"
     if not database_file.is_file() or not manifest_file.is_file():
-        report["ok"] = False
         report["errors"].append("backup_incomplete")
         return report
-    manifest = json.loads(manifest_file.read_text())
-    connection = sqlite3.connect(database_file)
+    if any(path.is_symlink() for path in (database_file, manifest_file, destination / "audio")):
+        report["errors"].append("invalid_backup_path")
+        return report
     try:
-        connection.row_factory = sqlite3.Row
-        if connection.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
-            report["ok"] = False
-            report["errors"].append("integrity_check_failed")
-        if list(connection.execute("PRAGMA foreign_key_check")):
-            report["ok"] = False
-            report["errors"].append("foreign_key_violation")
-        versions = sorted(
-            record["version"]
-            for record in connection.execute("SELECT version FROM schema_migrations")
+        manifest = json.loads(manifest_file.read_text())
+        if manifest["schema_version"] not in {"1.0", "1.1"}:
+            report["errors"].append("unsupported_manifest_version")
+            return report
+        entries = manifest["files"]
+        if not isinstance(entries, list):
+            raise ValueError("files must be a list")
+        for entry in entries:
+            if (
+                not _backup_key(entry["storage_key"])
+                or not isinstance(entry["audio_id"], str)
+                or entry["kind"] not in {"recording", "tts", "legacy_unknown"}
+                or type(entry["bytes"]) is not int
+                or entry["bytes"] < 0
+                or not isinstance(entry["sha256"], str)
+                or len(entry["sha256"]) != 64
+                or any(c not in "0123456789abcdef" for c in entry["sha256"])
+            ):
+                raise ValueError("invalid file entry")
+        if len({e["storage_key"] for e in entries}) != len(entries) or len(
+            {e["audio_id"] for e in entries}
+        ) != len(entries):
+            raise ValueError("duplicate file entry")
+        if manifest["schema_version"] == "1.1":
+            if manifest["database"] != _file_fingerprint(database_file):
+                report["errors"].append("database_hash_mismatch")
+    except (OSError, ValueError, KeyError, TypeError):
+        report["errors"].append("invalid_manifest")
+        return report
+    try:
+        _verify_backup_database(database_file, manifest, report)
+    except (sqlite3.Error, OSError, ValueError, TypeError):
+        report["errors"].append("invalid_database")
+    expected = {entry["storage_key"] for entry in entries}
+    try:
+        for entry in entries:
+            path = destination / "audio" / entry["storage_key"]
+            if path.is_symlink():
+                report["errors"].append("invalid_backup_path")
+            elif not path.is_file():
+                report["missing"].append(entry["storage_key"])
+            elif _file_fingerprint(path) != {"bytes": entry["bytes"], "sha256": entry["sha256"]}:
+                report["errors"].append("file_hash_mismatch")
+        if (destination / "audio").is_dir():
+            report["extra"].extend(
+                path.name for path in (destination / "audio").iterdir() if path.name not in expected
+            )
+        report["extra"].extend(
+            path.name
+            for path in destination.iterdir()
+            if path.name not in {"audio", "drill.sqlite3", "manifest.json"}
         )
-        if versions != manifest.get("migration_versions"):
-            report["ok"] = False
-            report["errors"].append("schema_version_mismatch")
-    finally:
-        connection.close()
-    expected = {entry["storage_key"] for entry in manifest["files"]}
-    for entry in manifest["files"]:
-        path = destination / "audio" / Path(entry["storage_key"]).name
-        if not path.is_file():
-            report["missing"].append(entry["storage_key"])
-            continue
-        data = path.read_bytes()
-        if len(data) != entry["bytes"] or hashlib.sha256(data).hexdigest() != entry["sha256"]:
-            report["ok"] = False
-            report["errors"].append("file_hash_mismatch")
-    for path in (destination / "audio").iterdir() if (destination / "audio").is_dir() else []:
-        if path.name not in {Path(key).name for key in expected}:
-            report["extra"].append(path.name)
-    if report["missing"]:
-        report["ok"] = False
+    except OSError:
+        report["errors"].append("unreadable_backup_file")
+    report["ok"] = not (report["errors"] or report["missing"] or report["extra"])
     return report
 
 
@@ -1015,6 +1355,8 @@ def row(db, table, identity):
 _TURN_SELECT = """SELECT t.*,
  s.answer_text AS submission_answer, s.submitted_via AS submission_via,
  s.source_exercise_id AS submission_exercise, s.source_playback_id AS submission_playback,
+ s.source_recording_id AS submission_recording,
+ s.source_transcription_id AS submission_transcription,
  s.committed_at AS submission_committed_at, s.provenance_status AS submission_provenance
  FROM turns t LEFT JOIN turn_submissions s ON s.turn_id=t.id"""
 
@@ -1033,6 +1375,8 @@ def turn_row(db, identity):
         turn["submitted_via"] = via
     turn["source_exercise_id"] = turn.pop("submission_exercise")
     turn["source_playback_id"] = turn.pop("submission_playback")
+    turn["source_recording_id"] = turn.pop("submission_recording")
+    turn["source_transcription_id"] = turn.pop("submission_transcription")
     turn["committed_at"] = turn.pop("submission_committed_at")
     turn["provenance_status"] = turn.pop("submission_provenance")
     return turn

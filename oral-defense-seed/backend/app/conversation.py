@@ -9,11 +9,19 @@ from pydantic import Field
 from . import contexts
 from .db import digest, encode, now, row, turn_row, turns_for, uid
 from .errors import APIError
+from .generation import generate_text, save_generation
+from .question_recovery import question_keys, recovery_question
 from .schemas import Input, RequestInput, TTSInput
 
 
 class Control(Input):
     action: Literal["resume", "pause", "end"]
+    revision: int | None = Field(default=None, ge=0)
+
+
+class ModeChange(Input):
+    mode: Literal["shadowing", "free_speech"]
+    revision: int = Field(ge=0)
 
 
 class Step(Input):
@@ -27,6 +35,15 @@ class Start(Step):
 
 class Reference(Input):
     text: str | None = Field(default=None, min_length=1, max_length=4000)
+    revision: int | None = Field(default=None, ge=0)
+    turn_id: UUID | None = None
+
+
+class AdoptReference(Input):
+    revision: int = Field(ge=0)
+    turn_id: UUID
+    reference_id: UUID | None
+    message_id: UUID
 
 
 class Ended(RequestInput):
@@ -64,15 +81,62 @@ def install_conversation(app, database, providers, tts):
         with database.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             state = flow(db, sid)
+            if body.revision is not None and state["revision"] != body.revision:
+                raise APIError(
+                    409, "stale_operation", "会話の状態が変わりました。表示を更新してください。"
+                )
             if state["status"] == "ended":
                 if body.action == "end":
                     return state
                 raise APIError(409, "ended", "終了済みです。新しいセッションを開始してください。")
+            if body.action == "resume":
+                session = row(db, "sessions", sid)
+                saved_settings = json.loads(session["settings_json"])
+                if saved_settings.get("prepare_documents"):
+                    manifest = db.execute(
+                        "SELECT 1 FROM session_pack_manifests WHERE session_id=? AND pack_hash=? LIMIT 1",
+                        (sid, session["pack_hash"]),
+                    ).fetchone()
+                    if manifest is None:
+                        raise APIError(
+                            409, "pack_not_prepared", "資料を確認してPackを確定してください。"
+                        )
+                    if not saved_settings.get("pack_started"):
+                        saved_settings["pack_started"] = True
+                        db.execute(
+                            "UPDATE sessions SET settings_json=? WHERE id=?",
+                            (encode(saved_settings), sid),
+                        )
             invalidate(db, sid)
             status = {"resume": "running", "pause": "paused", "end": "ended"}[body.action]
             db.execute(
                 "UPDATE conversations SET status=?,revision=revision+1,playback_id=NULL WHERE id=?",
                 (status, sid),
+            )
+            return flow(db, sid)
+
+    @app.post("/v1/sessions/{session_id}/conversation/mode")
+    def change_mode(session_id: UUID, body: ModeChange):
+        sid = str(session_id)
+        with database.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            state = flow(db, sid)
+            if row(db, "sessions", sid)["deletion_status"] != "active":
+                raise APIError(409, "session_deleting", "削除中のセッションです。")
+            if state["status"] != "paused" or state["revision"] != body.revision:
+                raise APIError(
+                    409, "pause_required", "会話を停止してからモードを変更してください。"
+                )
+            if state["mode"] == body.mode:
+                return state
+            invalidate(db, sid)
+            stage = state["stage"]
+            if stage in {"coach_generation", "model_playback", "free_speech_input"}:
+                stage = "free_speech_input" if body.mode == "free_speech" else "coach_generation"
+            db.execute(
+                """UPDATE conversations SET mode=?,stage=?,reference_id=NULL,
+                   audio_id=NULL,playback_id=NULL,revision=revision+1 WHERE id=?""",
+                (body.mode, stage, sid),
             )
             return flow(db, sid)
 
@@ -82,6 +146,14 @@ def install_conversation(app, database, providers, tts):
         with database.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             state = flow(db, sid)
+            if row(db, "sessions", sid)["deletion_status"] != "active":
+                raise APIError(409, "session_deleting", "削除中のセッションです。")
+            if (body.revision is not None and body.revision != state["revision"]) or (
+                body.turn_id is not None and str(body.turn_id) != state["turn_id"]
+            ):
+                raise APIError(
+                    409, "stale_operation", "古いお手本への操作です。表示を更新してください。"
+                )
             if state["status"] != "paused" or state["stage"] not in {
                 "coach_generation",
                 "model_playback",
@@ -115,6 +187,52 @@ def install_conversation(app, database, providers, tts):
             )
             return flow(db, sid)
 
+    @app.post("/v1/sessions/{session_id}/conversation/adopt")
+    def adopt_reference(session_id: UUID, body: AdoptReference):
+        sid = str(session_id)
+        with database.write_transaction() as db:
+            state = flow(db, sid)
+            if row(db, "sessions", sid)["deletion_status"] != "active":
+                raise APIError(409, "session_deleting", "削除中のセッションです。")
+            if state["status"] != "paused" or state["stage"] not in {
+                "coach_generation",
+                "model_playback",
+            }:
+                raise APIError(409, "pause_required", "未確定のお手本を停止中に採用してください。")
+            if (
+                state["revision"] != body.revision
+                or state["turn_id"] != str(body.turn_id)
+                or state["reference_id"] != (str(body.reference_id) if body.reference_id else None)
+            ):
+                raise APIError(
+                    409, "stale_operation", "古いお手本への操作です。表示を更新してください。"
+                )
+            turn = turn_row(db, state["turn_id"])
+            if turn["confirmed_answer_en"] is not None:
+                raise APIError(409, "already_confirmed", "返答は確定済みです。")
+            message = row(db, "coach_messages", str(body.message_id))
+            if message["session_id"] != sid or message["turn_id"] != turn["id"]:
+                raise APIError(409, "message_mismatch", "このturnのCoach案ではありません。")
+            text = json.loads(message["response_json"]).get("answer_en")
+            if (
+                message["level"] not in {"full_answer", "revision"}
+                or not text
+                or "[" in text
+                or "]" in text
+            ):
+                raise APIError(409, "unreadable_reference", "採用できる英文がありません。")
+            eid = uid()
+            db.execute(
+                "INSERT INTO exercises (id,session_id,turn_id,mode,reference_text,reference_hash,reference_origin,created_at,generation_json) VALUES (?,?,?,'listen_repeat',?,?,'coach',?,?)",
+                (eid, sid, turn["id"], text, digest(text), now(), message["generation_json"]),
+            )
+            invalidate(db, sid)
+            db.execute(
+                "UPDATE conversations SET reference_id=?,stage='model_playback',audio_id=NULL,playback_id=NULL,revision=revision+1 WHERE id=?",
+                (eid, sid),
+            )
+            return flow(db, sid)
+
     @app.post("/v1/sessions/{session_id}/conversation/step")
     def step(session_id: UUID, body: Step):
         sid = str(session_id)
@@ -133,6 +251,8 @@ def install_conversation(app, database, providers, tts):
                 )
             ][::-1]
         stage = state["stage"]
+        if stage == "free_speech_input":
+            return state
         if stage in {"question_playback", "model_playback"}:
             if body.route == "browser" or state["audio_id"]:
                 return state
@@ -177,7 +297,39 @@ def install_conversation(app, database, providers, tts):
             )
             role = "full_answer"
         target = providers.catalog.from_saved(saved["role_models"][role])
-        result = providers.text(role, messages, session_id=sid, target=target)
+        result, provenance = generate_text(providers, role, messages, session_id=sid, target=target)
+        if stage == "question_generation":
+            recent = set().union(*(question_keys(turn["question_en"]) for turn in turns[-12:]))
+            if question_keys(result["question_en"]).intersection(recent):
+                with database.connect() as db:
+                    current(db, sid, body.revision)
+                retry_payload = json.loads(messages[-1]["content"])
+                retry_payload["rejected_question"] = result["question_en"]
+                retry_payload["must_change_angle"] = True
+                retry_messages = [
+                    *messages[:-1],
+                    {"role": "user", "content": json.dumps(retry_payload, ensure_ascii=False)},
+                ]
+                result, provenance = generate_text(
+                    providers, role, retry_messages, session_id=sid, target=target
+                )
+                if question_keys(result["question_en"]).intersection(recent):
+                    fallback = recovery_question(
+                        session["scenario"], [turn["question_en"] for turn in turns]
+                    )
+                    if fallback is None:
+                        raise APIError(
+                            502,
+                            "repeated_question",
+                            "相手が同じ質問を繰り返しました。再試行してください。",
+                            True,
+                        )
+                    metadata = json.loads(provenance)
+                    metadata["model_output_hash"] = metadata["output_hash"]
+                    metadata["output_hash"] = digest(encode(fallback))
+                    metadata["recovery"] = "deterministic_general_question_after_repeated_output"
+                    provenance = encode(metadata)
+                    result = fallback
         with database.connect() as db:
             db.execute("BEGIN IMMEDIATE")
             current(db, sid, body.revision)
@@ -216,10 +368,10 @@ def install_conversation(app, database, providers, tts):
                         "読み上げ可能な返答がありません。再生成してください。",
                         True,
                     )
-                tid, eid = state["turn_id"], uid()
+                tid, eid, mid = state["turn_id"], uid(), uid()
                 db.execute(
                     "INSERT INTO coach_messages (id,session_id,turn_id,level,user_note,draft,response_json,created_at) VALUES (?,?,?,?,?,?,?,?)",
-                    (uid(), sid, tid, role, "", "", encode(result), now()),
+                    (mid, sid, tid, role, "", "", encode(result), now()),
                 )
                 db.execute(
                     "INSERT INTO exercises (id,session_id,turn_id,mode,reference_text,reference_hash,reference_origin,created_at) VALUES (?,?,?,?,?,?,?,?)",
@@ -229,6 +381,10 @@ def install_conversation(app, database, providers, tts):
                     "UPDATE conversations SET reference_id=?,audio_id=NULL,stage='model_playback',revision=revision+1 WHERE id=?",
                     (eid, sid),
                 )
+                save_generation(db, "coach_messages", mid, provenance)
+                save_generation(db, "exercises", eid, provenance)
+            if stage == "question_generation":
+                save_generation(db, "turns", tid, provenance)
             return flow(db, sid)
 
     @app.post("/v1/sessions/{session_id}/conversation/playbacks")
@@ -337,7 +493,7 @@ def install_conversation(app, database, providers, tts):
                 or state["stage"] != playback["stage"]
             ):
                 raise APIError(409, "stale_playback", "取消済み、または古い再生です。")
-            stage = "coach_generation"
+            stage = "free_speech_input" if state["mode"] == "free_speech" else "coach_generation"
             if playback["stage"] == "model_playback":
                 ref = row(db, "exercises", playback["reference_id"])
                 if (

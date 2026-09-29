@@ -6,6 +6,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .errors import APIError
+from .generation import WorkLimiter
 from .speech_models import SpeechCatalog
 from .text_models import ModelCatalog, conversation_headers
 
@@ -24,6 +25,12 @@ class Coach(BaseModel):
     explanation_ja: str = Field(min_length=1, max_length=8000)
     answer_en: str | None = Field(max_length=4000)
     needs_user_input: list[str] = Field(max_length=30)
+
+
+class FactualityReview(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    supported: bool
+    unsupported_claims: list[str] = Field(max_length=10)
 
 
 def generation_schema(schema):
@@ -45,11 +52,18 @@ class Providers:
         self.settings = settings
         self.catalog = ModelCatalog(settings)
         self.speech_catalog = SpeechCatalog(settings)
+        self.work = WorkLimiter()
 
     def text(self, role, messages, *, session_id, target=None):
         headers = conversation_headers(session_id, role)
         target = target or self.catalog.resolve()
-        schema = Question if role == "examiner" else Coach
+        schema = (
+            Question
+            if role == "examiner"
+            else FactualityReview
+            if role == "factuality_review"
+            else Coach
+        )
         if target.provider == "mock":
             p = json.loads(messages[-1]["content"])
             if role == "examiner":
@@ -68,6 +82,8 @@ class Providers:
                     "basis_note": "開発用mock: 一般的な確認質問。研究成果は仮定していません。",
                     "follow_up": follow_up,
                 }
+            elif role == "factuality_review":
+                data = {"supported": True, "unsupported_claims": []}
             else:
                 full = p["requested_level"] in {"full_answer", "revision"}
                 explanation = {
@@ -112,7 +128,9 @@ class Providers:
                         {
                             "type": "json_schema",
                             "json_schema": {
-                                "name": "examiner" if role == "examiner" else "coach",
+                                "name": role
+                                if role in {"examiner", "factuality_review"}
+                                else "coach",
                                 "strict": True,
                                 "schema": output_schema,
                             },
@@ -142,6 +160,8 @@ class Providers:
                 }
             else:
                 raise APIError(409, "unsupported_protocol", "このモデルのAPI形式は未対応です。")
+            if self.settings.text_temperature is not None:
+                payload["temperature"] = self.settings.text_temperature
             with httpx.Client(timeout=30, follow_redirects=False) as client:
                 response = client.post(
                     target.base_url.rstrip("/") + endpoint,
@@ -166,7 +186,7 @@ class Providers:
                     )
                 validated = schema.model_validate_json(content).model_dump()
                 if (
-                    role != "examiner"
+                    role not in {"examiner", "factuality_review"}
                     and json.loads(messages[-1]["content"])["requested_level"]
                     not in {"full_answer", "revision"}
                     and validated["answer_en"] is not None

@@ -23,11 +23,12 @@ SpeechRole = Literal["question", "coach_answer", "exercise"]
 
 class SessionInput(Input):
     pack: dict
+    prepare_documents: bool = False
     text_model: str | None = Field(default=None, max_length=250)
     speech_models: dict[SpeechRole, str] = Field(default_factory=dict)
     role_models: dict[TextRole, str] = Field(default_factory=dict)
     research_brief: str = Field(default="", max_length=4000)
-    mode: Literal["shadowing", "independent"] = "shadowing"
+    mode: Literal["shadowing", "free_speech", "independent"] = "shadowing"
     scenario: Literal["seminar", "lab_defense", "icebreaker", "networking"] = "seminar"
     settings: Difficulty = Field(default_factory=Difficulty)
 

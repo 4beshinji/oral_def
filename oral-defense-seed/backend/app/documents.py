@@ -1,5 +1,6 @@
 """Session-owned document ingestion and immutable Expert Pack manifests (#19)."""
 
+import asyncio
 import ipaddress
 import json
 import re
@@ -7,6 +8,7 @@ import socket
 from urllib.parse import urljoin, urlsplit
 
 import httpx
+from fastapi import File, Form, UploadFile
 
 from .db import digest, digest_bytes, encode, now, row, uid
 from .errors import APIError
@@ -49,38 +51,55 @@ def validate_url(url):
     host = parts.hostname.lower()
     if host in _BLOCKED_HOSTS or host.endswith(".local"):
         raise APIError(422, "blocked_host", "ローカルアドレスは取得できません。")
-    port = parts.port or (443 if parts.scheme == "https" else 80)
+    try:
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+    except ValueError:
+        raise APIError(422, "invalid_url", "URLを確認してください。") from None
     try:
         infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     except socket.gaierror:
         raise APIError(422, "unresolved_host", "ホスト名を解決できません。")
+    if not infos:
+        raise APIError(422, "unresolved_host", "ホスト名を解決できません。")
     for info in infos:
         if _blocked_ip(info[4][0]):
             raise APIError(422, "blocked_host", "内部ネットワークのアドレスは取得できません。")
-    return url
+    return infos[0][4][0]
 
 
 def fetch_url(url, client=None):
-    """Fetch with manual, re-validated redirects so internal hops are blocked."""
-    client = client or httpx.Client(timeout=15)
-    current = validate_url(url)
+    """Connect to the validated IP, preserving the original Host and TLS name."""
+    if client is None:
+        with httpx.Client(timeout=15, trust_env=False) as owned_client:
+            return fetch_url(url, owned_client)
+    current = url
     for _ in range(4):
-        response = client.get(current, follow_redirects=False)
-        if response.status_code in {301, 302, 303, 307, 308}:
-            location = response.headers.get("location")
-            if not location:
-                raise APIError(422, "invalid_redirect", "リダイレクト先がありません。")
-            current = validate_url(urljoin(current, location))
-            continue
-        if response.status_code == 404:
-            raise APIError(404, "not_found", "資料が見つかりません。")
-        if response.status_code >= 400:
-            raise APIError(502, "fetch_failed", "資料を取得できませんでした。")
-        content = response.content
-        if len(content) > MAX_FETCH_BYTES:
-            raise APIError(413, "document_too_large", "資料が大きすぎます。")
-        media_type = response.headers.get("content-type", "").split(";")[0].strip()
-        return current, content, media_type
+        address = validate_url(current)
+        parts = urlsplit(current)
+        pinned = httpx.URL(current).copy_with(host=address)
+        request = client.build_request("GET", pinned, headers={"Host": parts.netloc})
+        request.extensions["sni_hostname"] = parts.hostname
+        response = client.send(request, stream=True, follow_redirects=False)
+        try:
+            if response.status_code in {301, 302, 303, 307, 308}:
+                location = response.headers.get("location")
+                if not location:
+                    raise APIError(422, "invalid_redirect", "リダイレクト先がありません。")
+                current = urljoin(current, location)
+                continue
+            if response.status_code == 404:
+                raise APIError(404, "not_found", "資料が見つかりません。")
+            if response.status_code >= 400:
+                raise APIError(502, "fetch_failed", "資料を取得できませんでした。")
+            content = bytearray()
+            for chunk in response.iter_bytes():
+                content.extend(chunk)
+                if len(content) > MAX_FETCH_BYTES:
+                    raise APIError(413, "document_too_large", "資料が大きすぎます。")
+            media_type = response.headers.get("content-type", "").split(";")[0].strip()
+            return current, bytes(content), media_type
+        finally:
+            response.close()
     raise APIError(422, "too_many_redirects", "リダイレクトが多すぎます。")
 
 
@@ -225,11 +244,55 @@ def install_documents(app, database, settings):
         except Exception:
             status, error = "failed", "extractor_error"
         with database.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             session = row(db, "sessions", sid)
             if session["deletion_status"] != "active":
                 raise APIError(409, "session_deleting", "削除中のセッションです。")
             document_id = store_document(
                 db, sid, body, source_hash, status, error, extractor, version, segments
+            )
+        with database.connect() as db:
+            return document_view(db, document_id)
+
+    @app.post("/v1/sessions/{session_id}/documents/pdf", status_code=201)
+    async def upload_pdf(
+        session_id,
+        file: UploadFile = File(...),
+        provenance_role: str = Form("reference"),
+    ):
+        sid = str(session_id)
+        if provenance_role not in {"learner_work", "reference"}:
+            raise APIError(422, "invalid_provenance", "資料の種類を確認してください。")
+        with database.connect() as db:
+            session = row(db, "sessions", sid)
+            if session["deletion_status"] != "active":
+                raise APIError(409, "session_deleting", "削除中のセッションです。")
+        content = await file.read(MAX_FETCH_BYTES + 1)
+        if len(content) > MAX_FETCH_BYTES:
+            raise APIError(413, "document_too_large", "資料が大きすぎます。")
+        if not content.startswith(b"%PDF-"):
+            raise APIError(422, "invalid_pdf", "PDFファイルを指定してください。")
+        body = DocumentInput(
+            source_type="pdf",
+            name=(file.filename or "")[:300],
+            provenance_role=provenance_role,
+        )
+        status, error, extractor, version, segments = "succeeded", None, None, None, []
+        try:
+            segments, extractor, version = await asyncio.to_thread(
+                extract_segments, "pdf", content, "application/pdf"
+            )
+        except APIError as exc:
+            status, error = "failed", exc.body["code"]
+        except Exception:
+            status, error = "failed", "extractor_error"
+        with database.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            session = row(db, "sessions", sid)
+            if session["deletion_status"] != "active":
+                raise APIError(409, "session_deleting", "削除中のセッションです。")
+            document_id = store_document(
+                db, sid, body, digest_bytes(content), status, error, extractor, version, segments
             )
         with database.connect() as db:
             return document_view(db, document_id)
@@ -251,13 +314,28 @@ def install_documents(app, database, settings):
     def create_pack_manifest(session_id, body: PackManifestInput):
         sid = str(session_id)
         with database.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             session = row(db, "sessions", sid)
             if session["deletion_status"] != "active":
                 raise APIError(409, "session_deleting", "削除中のセッションです。")
+            session_settings = json.loads(session["settings_json"])
+            preparing = session_settings.get("prepare_documents", False)
+            if preparing:
+                state = db.execute("SELECT status FROM conversations WHERE id=?", (sid,)).fetchone()
+                if (
+                    session_settings.get("pack_started")
+                    or state is None
+                    or state["status"] != "paused"
+                    or db.execute(
+                        "SELECT 1 FROM turns WHERE session_id=? LIMIT 1", (sid,)
+                    ).fetchone()
+                ):
+                    raise APIError(409, "pack_locked", "開始後の会話資料は変更できません。")
             adopted = []
+            source_material = []
             for item in body.adopted:
                 document = db.execute(
-                    "SELECT id,session_id,extraction_status FROM session_documents WHERE id=?",
+                    "SELECT * FROM session_documents WHERE id=?",
                     (str(item.document_id),),
                 ).fetchone()
                 if document is None or document["session_id"] != sid:
@@ -275,8 +353,34 @@ def install_documents(app, database, settings):
                     ).fetchone()[0]
                     if found != len(segment_ids):
                         raise APIError(409, "segment_mismatch", "出典位置の指定が不正です。")
+                    if preparing:
+                        for segment in db.execute(
+                            f"""SELECT id,text,location_json FROM document_segments
+                                WHERE document_id=? AND id IN ({placeholders}) ORDER BY ordinal""",
+                            (document["id"], *segment_ids),
+                        ):
+                            source_material.append(
+                                {
+                                    "document_id": document["id"],
+                                    "segment_id": segment["id"],
+                                    "role": document["provenance_role"],
+                                    "location": json.loads(segment["location_json"] or "{}"),
+                                    "text": segment["text"],
+                                }
+                            )
                 adopted.append({"document_id": document["id"], "segment_ids": segment_ids})
-            pack_json = encode(body.pack)
+            pack = dict(body.pack)
+            if preparing:
+                if not source_material:
+                    raise APIError(
+                        422, "no_source_segments", "会話に使う資料の本文を選択してください。"
+                    )
+                pack["source_material"] = source_material
+            pack_json = encode(pack)
+            if len(pack_json) > 8000:
+                raise APIError(
+                    413, "pack_too_large", "採用資料を減らしてください。Packは8000文字までです。"
+                )
             manifest_id = uid()
             db.execute(
                 """INSERT INTO session_pack_manifests (id,session_id,schema_version,pack_hash,pack_json,adopted_json,created_at)
@@ -291,6 +395,11 @@ def install_documents(app, database, settings):
                     now(),
                 ),
             )
+            if preparing:
+                db.execute(
+                    "UPDATE sessions SET pack_snapshot_json=?,pack_hash=? WHERE id=?",
+                    (pack_json, digest(pack_json), sid),
+                )
             return {
                 "id": manifest_id,
                 "session_id": sid,

@@ -9,7 +9,9 @@ from fastapi.testclient import TestClient
 from backend.app.config import Settings
 from backend.app.contexts import coach_messages, examiner_messages
 from backend.app.errors import APIError
+from backend.app.factuality import has_unsupported_personal_claim
 from backend.app.main import create_app
+from backend.app.question_recovery import question_keys, recovery_question
 from backend.tests.test_drill import PACK, wav_bytes
 
 
@@ -104,9 +106,12 @@ def test_thirteen_turns_no_recording_and_private_context(client, monkeypatch):
     assert examiner_inputs[1]["confirmed_public_turns"][0]["answer_en"] == playback["text"]
     assert len(examiner_inputs[-1]["confirmed_public_turns"]) <= 12
     exported = client.get(f"/v1/sessions/{sid}/export").json()["session"]
-    assert len(exported["playbacks"]) == 26
+    assert "playbacks" not in exported
+    assert len(saved["playbacks"]) == 26
+    assert exported["turns_total"] == 13
+    assert all("coach_messages" not in turn for turn in exported["turns"])
     assert (
-        exported["playbacks"][-1]["reference_hash"]
+        saved["playbacks"][-1]["reference_hash"]
         == exported["turns"][-1]["exercises"][0]["reference_hash"]
     )
 
@@ -178,6 +183,138 @@ def test_generation_failure_preserves_commit_and_retry_no_duplicate(client, monk
         == 409
     )
     assert ended(client, sid, playback) == next_state
+
+
+def test_repeated_question_gets_one_corrective_generation(client, monkeypatch):
+    sid = session(client)
+    playback = start(client, sid, model_ready(client, sid))
+    state = ended(client, sid, playback)
+    old_question = snapshot(client, sid)["turns"][0]["question_en"]
+    repeated_core = "Thanks for explaining. " + old_question.split(". ")[-1]
+    original = client.app.state.providers.text
+    examiner_inputs = []
+
+    def provider(role, messages, **kwargs):
+        if role != "examiner":
+            return original(role, messages, **kwargs)
+        examiner_inputs.append(json.loads(messages[-1]["content"]))
+        return {
+            "question_en": repeated_core if len(examiner_inputs) == 1 else "What changed?",
+            "basis_note": "fixture",
+            "follow_up": False,
+        }
+
+    monkeypatch.setattr(client.app.state.providers, "text", provider)
+    step(client, sid, state)
+    saved = snapshot(client, sid)
+    assert saved["turns"][-1]["question_en"] == "What changed?"
+    assert len(examiner_inputs) == 2
+    assert examiner_inputs[0]["avoid_recent_questions"] == [old_question]
+    assert examiner_inputs[1]["rejected_question"] == repeated_core
+
+
+def test_question_keys_ignore_a_short_preface():
+    original = "You mentioned your method. Why did you choose it?"
+    repeated = "That is interesting. Why did you choose it?"
+    assert question_keys(original).intersection(question_keys(repeated))
+    with_clause = "Since you have not run experiments, how will you measure uncertainty?"
+    with_preface = "You mentioned benchmarks. How will you measure uncertainty?"
+    assert question_keys(with_clause).intersection(question_keys(with_preface))
+
+
+def test_recovery_skips_a_recently_discussed_topic():
+    previous = [
+        "What is the main question your research is trying to answer?",
+        "Which assumption in your current research plan is most important to test?",
+        "What observation would make you revise your current approach?",
+        "How do you plan to measure whether the comparison is fair?",
+    ]
+    result = recovery_question("seminar", previous)
+    assert result["question_en"] != "How would you decide whether a comparison is fair?"
+
+
+def test_unsupported_coach_plan_is_not_spoken_or_passed_to_examiner(client, monkeypatch):
+    sid = session(client)
+    original = client.app.state.providers.text
+    reviewed = []
+    examiner_inputs = []
+
+    def provider(role, messages, **kwargs):
+        if role == "full_answer":
+            return {
+                "explanation_ja": "fixture",
+                "answer_en": "I plan to run multiple trials.",
+                "needs_user_input": [],
+            }
+        if role == "factuality_review":
+            reviewed.append(json.loads(messages[-1]["content"]))
+            return {"supported": True, "unsupported_claims": []}
+        if role == "examiner":
+            examiner_inputs.append(json.loads(messages[-1]["content"]))
+        return original(role, messages, **kwargs)
+
+    monkeypatch.setattr(client.app.state.providers, "text", provider)
+    state = model_ready(client, sid)
+    saved = snapshot(client, sid)
+    exercise = saved["turns"][0]["exercises"][0]
+    assert reviewed[0]["candidate_answer_en"] == "I plan to run multiple trials."
+    assert "multiple trials" not in exercise["reference_text"]
+    assert exercise["generation"]["factuality_review"]["supported"] is False
+    assert exercise["generation"]["factuality_review"]["policy_rejected"] is True
+    playback = start(client, sid, state)
+    state = ended(client, sid, playback)
+    step(client, sid, state)
+    assert "multiple trials" not in json.dumps(examiner_inputs[-1])
+
+
+def test_personal_claim_policy_requires_learner_wording():
+    source = [
+        "I plan to compare expected improvement with random search. I have not run experiments."
+    ]
+    assert not has_unsupported_personal_claim(
+        "I plan to compare expected improvement with random search.", source
+    )
+    assert has_unsupported_personal_claim("I plan to run multiple trials.", source)
+    assert has_unsupported_personal_claim("I am still considering the budget.", source)
+    assert has_unsupported_personal_claim("My experiments showed an improvement.", source)
+    assert has_unsupported_personal_claim(
+        "I'm working with expensive laboratory experiments.", source
+    )
+    assert not has_unsupported_personal_claim("I haven't decided on that detail yet.", source)
+
+
+def test_repeated_question_uses_recorded_recovery_after_bounded_retry(client, monkeypatch):
+    sid = session(client)
+    playback = start(client, sid, model_ready(client, sid))
+    state = ended(client, sid, playback)
+    old_question = snapshot(client, sid)["turns"][0]["question_en"]
+    original = client.app.state.providers.text
+    calls = 0
+
+    def provider(role, messages, **kwargs):
+        nonlocal calls
+        if role != "examiner":
+            return original(role, messages, **kwargs)
+        calls += 1
+        return {"question_en": old_question, "basis_note": "fixture", "follow_up": False}
+
+    monkeypatch.setattr(client.app.state.providers, "text", provider)
+    response = client.post(
+        f"/v1/sessions/{sid}/conversation/step",
+        json={"revision": state["revision"], "route": "browser"},
+    )
+    assert response.status_code == 200
+    assert calls == 2
+    saved = snapshot(client, sid)
+    assert len(saved["turns"]) == 2
+    assert saved["conversation"]["stage"] == "question_playback"
+    assert saved["turns"][0]["confirmed_answer_en"] == playback["text"]
+    recovered = saved["turns"][1]
+    assert recovered["question_en"] != old_question
+    assert recovered["follow_up_count"] == 0
+    provenance = recovered["generation"]
+    assert provenance["recovery"] == "deterministic_general_question_after_repeated_output"
+    assert provenance["output_hash"] != provenance["model_output_hash"]
 
 
 def test_pause_during_provider_call_discards_late_generation(client, monkeypatch):

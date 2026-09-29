@@ -1,4 +1,6 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 
 import httpx
 import pytest
@@ -143,6 +145,22 @@ def test_url_html_extraction_and_location(client, monkeypatch):
     assert document["original_url"] == "https://example.test/paper"
 
 
+def test_url_connects_to_validated_ip_with_original_host_and_tls_name(monkeypatch):
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        return httpx.Response(200, headers={"content-type": "text/html"}, content=b"<p>Safe</p>")
+
+    mock_fetch(monkeypatch, handler)
+    final_url, content, _ = documents.fetch_url("https://example.test/paper")
+    assert final_url == "https://example.test/paper"
+    assert content == b"<p>Safe</p>"
+    assert seen[0].url.host == "93.184.216.34"
+    assert seen[0].headers["host"] == "example.test"
+    assert seen[0].extensions["sni_hostname"] == "example.test"
+
+
 def test_url_pdf_extraction(client, monkeypatch):
     sid = new_session(client)
 
@@ -162,6 +180,177 @@ def test_url_pdf_extraction(client, monkeypatch):
     assert document["extractor"] == "pypdf"
     assert "Extracted" in document["segments"][0]["text"]
     assert document["segments"][0]["location"] == {"page": 1}
+
+
+def test_pdf_upload_extracts_and_rejects_invalid_inputs(client):
+    sid = new_session(client)
+    content = minimal_pdf("Uploaded")
+    response = client.post(
+        f"/v1/sessions/{sid}/documents/pdf",
+        files={"file": ("paper.pdf", content, "application/pdf")},
+        data={"provenance_role": "learner_work"},
+    )
+    assert response.status_code == 201, response.text
+    document = response.json()
+    assert document["source_type"] == "pdf"
+    assert document["original_name"] == "paper.pdf"
+    assert document["provenance_role"] == "learner_work"
+    assert document["source_hash"]
+    assert "Uploaded" in document["segments"][0]["text"]
+    assert document["segments"][0]["location"] == {"page": 1}
+
+    invalid = client.post(
+        f"/v1/sessions/{sid}/documents/pdf",
+        files={"file": ("paper.pdf", b"not a pdf", "application/pdf")},
+    )
+    assert invalid.status_code == 422
+    assert invalid.json()["code"] == "invalid_pdf"
+    oversized = client.post(
+        f"/v1/sessions/{sid}/documents/pdf",
+        files={
+            "file": ("paper.pdf", b"%PDF-" + b"x" * documents.MAX_FETCH_BYTES, "application/pdf")
+        },
+    )
+    assert oversized.status_code == 413
+    assert len(client.get(f"/v1/sessions/{sid}/documents").json()) == 1
+
+
+def test_prepared_pack_is_frozen_for_conversation_and_export(client, monkeypatch):
+    created = client.post(
+        "/v1/sessions",
+        json={"pack": PACK, "prepare_documents": True, "research_brief": "My own brief."},
+    )
+    assert created.status_code == 201, created.text
+    sid = created.json()["session_id"]
+    assert client.get(f"/v1/sessions/{sid}").json()["conversation"]["status"] == "paused"
+    blocked = client.post(f"/v1/sessions/{sid}/conversation/control", json={"action": "resume"})
+    assert blocked.status_code == 409
+    assert blocked.json()["code"] == "pack_not_prepared"
+
+    document = client.post(
+        f"/v1/sessions/{sid}/documents",
+        json={
+            "source_type": "brief",
+            "provenance_role": "learner_work",
+            "text": "My own measured result is still unknown.",
+        },
+    ).json()
+    manifest = client.post(
+        f"/v1/sessions/{sid}/pack-manifest",
+        json={
+            "schema_version": "1.0",
+            "pack": PACK,
+            "adopted": [
+                {"document_id": document["id"], "segment_ids": [document["segments"][0]["id"]]}
+            ],
+        },
+    )
+    assert manifest.status_code == 201, manifest.text
+    saved = client.get(f"/v1/sessions/{sid}").json()
+    assert saved["pack_hash"] == manifest.json()["pack_hash"]
+    assert saved["pack_snapshot"]["source_material"][0]["role"] == "learner_work"
+    assert "still unknown" in saved["pack_snapshot"]["source_material"][0]["text"]
+    exported = client.get(f"/v1/sessions/{sid}/export").json()["session"]
+    assert exported["pack_hash"] == saved["pack_hash"]
+    assert exported["pack_manifest"]["id"] == manifest.json()["id"]
+
+    resumed = client.post(f"/v1/sessions/{sid}/conversation/control", json={"action": "resume"})
+    assert resumed.status_code == 200, resumed.text
+    calls = []
+    original = client.app.state.providers.text
+
+    def provider(role, messages, **kwargs):
+        calls.append(json.loads(messages[-1]["content"]))
+        return original(role, messages, **kwargs)
+
+    monkeypatch.setattr(client.app.state.providers, "text", provider)
+    stepped = client.post(
+        f"/v1/sessions/{sid}/conversation/step",
+        json={"revision": resumed.json()["revision"], "route": "browser"},
+    )
+    assert stepped.status_code == 200, stepped.text
+    assert calls[0]["expert_pack_snapshot"] == saved["pack_snapshot"]
+    later = client.post(
+        f"/v1/sessions/{sid}/pack-manifest",
+        json={"schema_version": "1.0", "pack": PACK, "adopted": []},
+    )
+    assert later.status_code == 409
+    assert later.json()["code"] == "pack_locked"
+
+
+def test_pdf_extraction_does_not_restore_deleted_session(client, monkeypatch):
+    sid = new_session(client)
+    entered, release = Event(), Event()
+    original = documents.extract_segments
+
+    def slow(*args):
+        entered.set()
+        assert release.wait(5)
+        return original(*args)
+
+    monkeypatch.setattr(documents, "extract_segments", slow)
+    with ThreadPoolExecutor() as pool:
+        future = pool.submit(
+            client.post,
+            f"/v1/sessions/{sid}/documents/pdf",
+            files={"file": ("paper.pdf", minimal_pdf(), "application/pdf")},
+        )
+        assert entered.wait(5)
+        try:
+            assert client.delete(f"/v1/sessions/{sid}").status_code == 200
+        finally:
+            release.set()
+        result = future.result()
+        assert result.status_code in {404, 409}
+        assert result.json()["code"] in {"not_found", "session_deleting"}
+    with client.app.state.database.connect() as db:
+        assert db.execute("SELECT count(*) FROM session_documents").fetchone()[0] == 0
+
+
+def test_prepare_and_resume_use_the_same_pinned_pack(client, monkeypatch):
+    sid = client.post("/v1/sessions", json={"pack": PACK, "prepare_documents": True}).json()[
+        "session_id"
+    ]
+    document = client.post(
+        f"/v1/sessions/{sid}/documents",
+        json={"source_type": "brief", "text": "A bounded study plan."},
+    ).json()
+    entered, release = Event(), Event()
+    original = documents.uid
+
+    def slow_uid():
+        entered.set()
+        assert release.wait(5)
+        return original()
+
+    monkeypatch.setattr(documents, "uid", slow_uid)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        manifest_future = pool.submit(
+            client.post,
+            f"/v1/sessions/{sid}/pack-manifest",
+            json={
+                "schema_version": "1.0",
+                "pack": PACK,
+                "adopted": [
+                    {"document_id": document["id"], "segment_ids": [document["segments"][0]["id"]]}
+                ],
+            },
+        )
+        assert entered.wait(5)
+        resume_future = pool.submit(
+            client.post,
+            f"/v1/sessions/{sid}/conversation/control",
+            json={"action": "resume"},
+        )
+        release.set()
+        manifest = manifest_future.result()
+        resumed = resume_future.result()
+    assert manifest.status_code == 201, manifest.text
+    assert resumed.status_code == 200, resumed.text
+    saved = client.get(f"/v1/sessions/{sid}").json()
+    assert saved["pack_hash"] == manifest.json()["pack_hash"]
+    assert saved["settings"]["pack_started"] is True
+    assert saved["conversation"]["status"] == "running"
 
 
 @pytest.mark.parametrize(

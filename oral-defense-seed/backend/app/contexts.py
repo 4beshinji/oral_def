@@ -35,6 +35,7 @@ def examiner_messages(*, pack, research_brief, turns, scenario, settings, follow
         "expert_pack_snapshot": pack,
         "research_brief": research_brief,
         "confirmed_public_turns": public_turns(turns),
+        "avoid_recent_questions": [t["question_en"][:500] for t in turns[-12:]],
         "scenario": scenario,
         "language_level": settings["language_level"],
         "technical_depth": settings["technical_depth"],
@@ -64,6 +65,12 @@ def coach_messages(
         "expert_pack_snapshot": pack,
         "research_brief": research_brief,
         "public_turns": public_turns(turns),
+        "source_authority": {
+            "research_brief": "Learner-provided statements; preserve their tense and uncertainty.",
+            "learner_note_and_draft": "Learner-provided statements for this request.",
+            "expert_pack_snapshot": "Reference background; not evidence of the learner's results or decisions.",
+            "public_turns_and_coach_history": "Conversation history, potentially generated; not independent evidence of personal facts.",
+        },
         "current_question": current_question,
         "scenario": scenario,
         "assistance_settings": settings or {},
@@ -84,6 +91,20 @@ def coach_messages(
         "learner_draft": draft,
     }
     return _messages("coach", payload)
+
+
+def factuality_review_messages(coach_messages, answer_en):
+    original = json.loads(coach_messages[-1]["content"])
+    return _messages(
+        "factuality_review",
+        {
+            "research_brief": original["research_brief"],
+            "learner_note": original["learner_note"],
+            "learner_draft": original["learner_draft"],
+            "current_question": original["current_question"],
+            "candidate_answer_en": answer_en,
+        },
+    )
 
 
 def _messages(role, payload):

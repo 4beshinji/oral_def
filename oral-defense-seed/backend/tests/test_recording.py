@@ -1,4 +1,6 @@
 import json
+import sqlite3
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -63,6 +65,63 @@ def test_retake_uses_new_key_and_new_attempt(client):
     assert first["attempt_id"] != second["attempt_id"]
     assert first["audio_id"] != second["audio_id"]
     assert len(attempts(client)) == 2
+
+
+def test_partial_file_write_does_not_leave_orphan(client, monkeypatch):
+    _, tid = new_turn(client)
+    exercise = fixed(client, tid)
+    original = Path.write_bytes
+
+    def partial(path, data):
+        if ".part" in path.name:
+            with path.open("wb") as file:
+                file.write(data[:4])
+            raise OSError("injected write failure")
+        return original(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", partial)
+    with pytest.raises(OSError, match="injected write failure"):
+        upload(client, exercise["id"], key="write-failure")
+    assert list(client.app.state.database.audio_dir.iterdir()) == []
+    assert attempts(client) == []
+
+
+def test_file_rename_failure_can_retry_with_same_key(client, monkeypatch):
+    _, tid = new_turn(client)
+    exercise = fixed(client, tid)
+    original = Path.replace
+
+    def fail_rename(path, target):
+        if ".part" in path.name:
+            raise OSError("injected rename failure")
+        return original(path, target)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "replace", fail_rename)
+        with pytest.raises(OSError, match="injected rename failure"):
+            upload(client, exercise["id"], key="rename-retry")
+    assert list(client.app.state.database.audio_dir.iterdir()) == []
+    assert attempts(client) == []
+    with client.app.state.database.connect() as db:
+        assert db.execute("SELECT count(*) FROM audio_files").fetchone()[0] == 0
+    assert upload(client, exercise["id"], key="rename-retry").status_code == 201
+    assert len(attempts(client)) == 1
+
+
+def test_attempt_insert_failure_removes_renamed_audio(client):
+    _, tid = new_turn(client)
+    exercise = fixed(client, tid)
+    with client.app.state.database.connect() as db:
+        db.execute(
+            """CREATE TRIGGER fail_attempt BEFORE INSERT ON attempts
+               BEGIN SELECT RAISE(ABORT, 'injected insert failure'); END"""
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="injected insert failure"):
+        upload(client, exercise["id"], key="insert-failure")
+    assert list(client.app.state.database.audio_dir.iterdir()) == []
+    assert attempts(client) == []
+    with client.app.state.database.connect() as db:
+        assert db.execute("SELECT count(*) FROM audio_files").fetchone()[0] == 0
 
 
 def test_capture_request_and_actual_media_are_separate(client):

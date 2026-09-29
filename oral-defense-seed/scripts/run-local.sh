@@ -16,6 +16,7 @@ oral_logs="${ORAL_LOG_DIR:-$oral_root/.cache/local-runtime}"
 import socket, sys
 for port in (int(sys.argv[1]), 8000):
     with socket.socket() as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind(('127.0.0.1', port))
         except OSError:
@@ -59,7 +60,9 @@ PY
 cd "$oral_root"
 TEXT_PROVIDER=compatible TEXT_BASE_URL="http://127.0.0.1:$oral_port/v1" \
 TEXT_MODEL=qwen38-27b-abliterated TEXT_RESPONSE_FORMAT=json_schema TEXT_API_KEY= \
+TEXT_TEMPERATURE="${TEXT_TEMPERATURE:-0}" \
 TTS_PROVIDER=local MODEL_CATALOG_REFRESH_HOURS=0 \
+ASR_PROVIDER="${ASR_PROVIDER:-local}" \
 DATA_DIR="${ORAL_DATA_DIR:-$oral_root/data/local-qwen}" \
 .venv/bin/uvicorn backend.app.main:app --host 127.0.0.1 --port 8000 \
   > "$oral_logs/app.log" 2>&1 &

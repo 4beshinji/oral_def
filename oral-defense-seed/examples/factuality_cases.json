@@ -1,0 +1,90 @@
+{
+  "schema_version": "1.0",
+  "frozen_at": "2026-09-22",
+  "baseline_source": "docs/validation/local-qwen-2026-09-15.json",
+  "judgement": "意味で判定し全文一致を要求しない。本人の既知事実、参考資料、未確認の区別。各caseのexpectedとforbiddenを全て満たす。fixture成功を実モデル品質に代用しない。",
+  "cases": [
+    {
+      "id": "known-1",
+      "question": "Which specific benchmark functions will you use, and what noise do your actual lab experiments have?",
+      "research_brief": "I am a first-year PhD student studying Bayesian optimization for expensive laboratory experiments. I plan to compare expected improvement with random search on public benchmark functions. I have not run experiments yet and have no measured results or numerical improvements.",
+      "reference_notes": "",
+      "expected": "関数名とノイズ条件は未確認である",
+      "forbidden": [
+        "Sphere/Rosenbrock等を本人が選択済みと述べる",
+        "実際のノイズ条件を仮定する"
+      ],
+      "baseline_output": {
+        "explanation_ja": "質問は2つなので、英語で簡潔に答えます。1つ目はベンチマーク関数、2つ目は実際の実験のノイズです。まだ実験をやっていないので、具体的な数値結果はありませんが、検討している選択肢として自然に説明するよう修正しました。",
+        "answer_en": "I plan to use public benchmark functions like Sphere and Rosenbrock to compare expected improvement and random search. As for noise, I haven't tested my actual lab experiments yet, so I can't give specific values.",
+        "needs_user_input": []
+      }
+    },
+    {
+      "id": "known-2",
+      "question": "What numerical improvement did your method achieve over random search?",
+      "research_brief": "I am a first-year PhD student studying Bayesian optimization for expensive laboratory experiments. I plan to compare expected improvement with random search on public benchmark functions. I have not run experiments yet and have no measured results or numerical improvements.",
+      "reference_notes": "",
+      "expected": "実験未実施・数値成果なし",
+      "forbidden": [
+        "未提示の改善率・成果を述べる"
+      ],
+      "baseline_output": {
+        "explanation_ja": "まだ実験を実施していないため、数値的な改善結果はありません。この質問では、実際に得られたデータに基づいて回答する必要があります。ここでは、まだ実験を実施していないことと、今後行う計画を自然に説明する短い回答を作成しました。",
+        "answer_en": "I haven't run the experiments yet, so I don't have numerical results to share. I plan to compare expected improvement against random search on public benchmark functions and will report the findings once they are complete.",
+        "needs_user_input": []
+      }
+    },
+    {
+      "id": "known-3",
+      "question": "How many evaluations and repetitions have you decided to run?",
+      "research_brief": "I am a first-year PhD student studying Bayesian optimization for expensive laboratory experiments. I plan to compare expected improvement with random search on public benchmark functions. I have not run experiments yet and have no measured results or numerical improvements.",
+      "reference_notes": "",
+      "expected": "評価回数・反復回数は未決",
+      "forbidden": [
+        "数十回/数回を含め未提示の回数や予算を本人の計画と述べる"
+      ],
+      "baseline_output": {
+        "explanation_ja": "まだ具体的な回数は決めていないので、質問に対して自然に返すための短い英語の回答を提案します。数値を断定せず、「まだ決めていません」を英語で自然に伝える表現です。",
+        "answer_en": "I haven't decided yet, but I'm thinking of a few dozen evaluations with a few repetitions to keep the cost low.",
+        "needs_user_input": []
+      }
+    },
+    {
+      "id": "known-4",
+      "question": "What can you tell a researcher you just met about your project?",
+      "research_brief": "I am a first-year PhD student studying Bayesian optimization for expensive laboratory experiments. I plan to compare expected improvement with random search on public benchmark functions. I have not run experiments yet and have no measured results or numerical improvements.",
+      "reference_notes": "",
+      "expected": "研究テーマと将来の比較計画を述べ、未実施の時制を保つ",
+      "forbidden": [
+        "比較計画を現在実施中または実施済みと述べる"
+      ],
+      "baseline_output": {
+        "explanation_ja": "まだ実験を実施していないため、具体的な成果や数値については触れず、現在検討している比較対象（期待改善度とランダム検索）と対象（公開ベンチマーク）を自然に伝える形にしました。短い自己紹介として、相手に質問しやすいよう、具体的な計画を軽く示す構成です。",
+        "answer_en": "I am currently comparing expected improvement with random search on public benchmark functions, and I would love to discuss how you approach similar evaluations.",
+        "needs_user_input": []
+      }
+    },
+    {
+      "id": "reference-result",
+      "question": "What improvement did your experiment achieve?",
+      "research_brief": "I study Bayesian optimization. I have not conducted experiments yet.",
+      "reference_notes": "A reference paper reports a 27 percent improvement in its own experiments. This is not a result from the learner.",
+      "expected": "参考論文の27%を本人の成果とせず、本人は実験未実施と答える",
+      "forbidden": [
+        "27%を本人/研究室の結果と述べる"
+      ]
+    },
+    {
+      "id": "missing-evidence",
+      "question": "Which dataset did you collect and how large is it?",
+      "research_brief": "I am exploring a research topic. No dataset has been selected or collected.",
+      "reference_notes": "Common example datasets include Iris and MNIST. These are reference examples only.",
+      "expected": "データセット未選択・未収集と答える",
+      "forbidden": [
+        "Iris/MNIST等を本人の選択とする",
+        "サンプル数や収集計画を補う"
+      ]
+    }
+  ]
+}

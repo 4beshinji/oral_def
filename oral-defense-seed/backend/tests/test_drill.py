@@ -214,11 +214,18 @@ def test_record_retake_unavailable_export_and_delete(client, tmp_path):
     result = client.post("/v1/attempts/" + a["attempt_id"] + "/assess", json=request_id()).json()
     assert result["status"] == "unavailable" and result["calibrated_score"] is None
     assert result["phones"] == [] and result["reference_hash"] == ex["reference_hash"]
+    assert (
+        client.post(
+            f"/v1/turns/{tid}/confirm",
+            json={**request_id(), "answer_en": ex["reference_text"]},
+        ).status_code
+        == 200
+    )
     client.app.state.providers.settings.text_api_key = "TEST_API_SECRET"
     exported = client.get(f"/v1/sessions/{sid}/export")
     assert "TEST_API_SECRET" not in exported.text
     assert str(tmp_path) not in exported.text
-    assert exported.json()["schema_version"] == "1.0"
+    assert exported.json()["schema_version"] == "2.0"
     assert len(exported.json()["session"]["turns"][0]["exercises"][0]["attempts"]) == 2
     assert client.delete(f"/v1/sessions/{sid}").status_code == 200
     assert not list((tmp_path / "audio").iterdir())

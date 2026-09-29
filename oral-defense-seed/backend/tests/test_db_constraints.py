@@ -154,3 +154,83 @@ def test_existing_shadowing_flow_still_passes_constraints(tmp_path):
         ).json()
         assert client.delete(f"/v1/sessions/{sid}").status_code == 200
         assert playback["playback_id"]
+
+
+@pytest.mark.parametrize(
+    "table", ["conversation_playbacks", "assistance", "conversations", "turn_submissions"]
+)
+@pytest.mark.parametrize("operation", ["insert", "update"])
+def test_same_session_reference_must_belong_to_turn(database, table, operation):
+    with database.connect() as db:
+        first = seed_session(db, "s1")
+        second = "s1-turn-2"
+        db.execute(
+            "INSERT INTO turns (id,session_id,ordinal,question_en,basis_note,follow_up_count) VALUES (?,?,?,?,?,?)",
+            (second, "s1", 2, "q2", "b2", 0),
+        )
+        seed_exercise(db, "s1", first, "e1")
+        seed_exercise(db, "s1", second, "e2")
+        statements = {
+            "conversation_playbacks": (
+                "INSERT INTO conversation_playbacks (id,session_id,turn_id,reference_id,revision,stage,reference_hash,tts_settings_json) VALUES ('p1','s1',?,'e1',1,'model_playback','hash','{}')",
+                "UPDATE conversation_playbacks SET turn_id=? WHERE id='p1'",
+            ),
+            "assistance": (
+                "INSERT INTO assistance (id,session_id,turn_id,exercise_id,kind,created_at) VALUES ('a1','s1',?,'e1','reference_shown','now')",
+                "UPDATE assistance SET turn_id=? WHERE id='a1'",
+            ),
+            "conversations": (
+                "INSERT INTO conversations (id,turn_id,reference_id) VALUES ('s1',?,'e1')",
+                "UPDATE conversations SET turn_id=? WHERE id='s1'",
+            ),
+            "turn_submissions": (
+                "INSERT INTO turn_submissions (session_id,turn_id,answer_text,submitted_via,source_exercise_id,provenance_status) VALUES ('s1',?,'text','confirmed_reference','e1','exact')",
+                "UPDATE turn_submissions SET turn_id=? WHERE session_id='s1'",
+            ),
+        }
+        insert, update = statements[table]
+        if operation == "update":
+            db.execute(insert, (first,))
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute(insert if operation == "insert" else update, (second,))
+
+
+@pytest.mark.parametrize("table", ["conversations", "turn_submissions"])
+@pytest.mark.parametrize("other_turn", [False, True])
+def test_current_and_submitted_playback_match_turn_and_reference(database, table, other_turn):
+    with database.connect() as db:
+        turn = seed_session(db, "s1")
+        second = "s1-turn-2"
+        db.execute(
+            "INSERT INTO turns (id,session_id,ordinal,question_en,basis_note,follow_up_count) VALUES (?,?,?,?,?,?)",
+            (second, "s1", 2, "q2", "b2", 0),
+        )
+        seed_exercise(db, "s1", turn, "e1")
+        seed_exercise(db, "s1", second if other_turn else turn, "e2")
+        seed_playback(db, "s1", second if other_turn else turn, "p2", "model_playback", "e2")
+        with pytest.raises(sqlite3.IntegrityError):
+            if table == "conversations":
+                db.execute(
+                    "INSERT INTO conversations (id,turn_id,reference_id,playback_id) VALUES ('s1',?,'e1','p2')",
+                    (turn,),
+                )
+            else:
+                db.execute(
+                    "INSERT INTO turn_submissions (session_id,turn_id,answer_text,submitted_via,source_exercise_id,source_playback_id,provenance_status) VALUES ('s1',?,'text','shadowing_playback','e1','p2','exact')",
+                    (turn,),
+                )
+
+
+def test_existing_playback_and_parent_identity_cannot_be_reassigned(database):
+    with database.connect() as db:
+        turn = seed_session(db, "s1")
+        seed_session(db, "s2")
+        seed_exercise(db, "s1", turn, "e1")
+        seed_playback(db, "s1", turn, "p1", "model_playback", "e1")
+        for statement in (
+            "UPDATE conversation_playbacks SET reference_hash='different' WHERE id='p1'",
+            "UPDATE turns SET session_id='s2' WHERE id='s1-turn-1'",
+            "UPDATE exercises SET id='e3' WHERE id='e1'",
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                db.execute(statement)

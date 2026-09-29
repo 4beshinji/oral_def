@@ -17,6 +17,11 @@ class Settings:
     text_response_format: str = field(
         default_factory=lambda: os.getenv("TEXT_RESPONSE_FORMAT", "json_object")
     )
+    text_temperature: float | None = field(
+        default_factory=lambda: (
+            float(os.environ["TEXT_TEMPERATURE"]) if os.getenv("TEXT_TEMPERATURE") else None
+        )
+    )
     text_api_key: str = field(default_factory=lambda: os.getenv("TEXT_API_KEY", ""), repr=False)
     opencode_go_api_key: str = field(
         default_factory=lambda: os.getenv("OPENCODE_GO_API_KEY", os.getenv("OPENCODE_API_KEY", "")),
@@ -52,8 +57,19 @@ class Settings:
     pronunciation_provider: str = field(
         default_factory=lambda: os.getenv("PRONUNCIATION_PROVIDER", "unavailable")
     )
+    asr_provider: str = field(default_factory=lambda: os.getenv("ASR_PROVIDER", "unavailable"))
+    asr_model_dir: Path = field(
+        default_factory=lambda: (
+            Path(os.getenv("ASR_MODEL_DIR", ROOT / "models/speech/asr-base.en"))
+            .expanduser()
+            .resolve()
+        )
+    )
+    asr_cpu_threads: int = field(default_factory=lambda: int(os.getenv("ASR_CPU_THREADS", "8")))
 
     def __post_init__(self):
+        if self.text_temperature is not None and not 0 <= self.text_temperature <= 1:
+            raise ValueError("TEXT_TEMPERATURE must be between 0 and 1")
         if not 0 <= self.model_catalog_refresh_hours <= 168:
             raise ValueError("MODEL_CATALOG_REFRESH_HOURS must be between 0 and 168")
         if self.text_response_format not in {"json_object", "json_schema"}:
@@ -64,6 +80,10 @@ class Settings:
             raise ValueError("Unknown TTS_PROVIDER")
         if self.pronunciation_provider not in {"unavailable", "kaldi"}:
             raise ValueError("Unknown PRONUNCIATION_PROVIDER")
+        if self.asr_provider not in {"unavailable", "local"}:
+            raise ValueError("Unknown ASR_PROVIDER")
+        if not 1 <= self.asr_cpu_threads <= 32:
+            raise ValueError("ASR_CPU_THREADS must be between 1 and 32")
         for enabled, url in [
             (self.text_provider == "compatible", self.text_base_url),
             (self.tts_provider == "http", self.tts_base_url),

@@ -374,6 +374,19 @@ def test_all_roles_route_independently_and_survive_restart(tmp_path, monkeypatch
             return public_response(request, remote)
         payload = json.loads(request.content)
         body = json.loads(payload["messages"][-1]["content"])
+        if "candidate_answer_en" in body:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps({"supported": True, "unsupported_claims": []})
+                            }
+                        }
+                    ]
+                },
+            )
         role = body.get("requested_level", "examiner")
         requests.append((role, payload["model"], request.headers["x-opencode-session"]))
         result = (

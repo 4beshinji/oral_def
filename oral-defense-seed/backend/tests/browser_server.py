@@ -52,3 +52,22 @@ def speech_candidates():
 
 
 app.state.providers.speech_catalog.candidates = speech_candidates
+
+
+# Fixture endpoints exist only in this isolated test server, never in the app.
+@app.post("/v1/test/history/{session_id}")
+def history_fixture(session_id: str):
+    from backend.tests.history_fixture import seed_history
+
+    return seed_history(app.state.database, session_id)
+
+
+@app.post("/v1/test/history/{session_id}/append")
+def append_history_fixture(session_id: str):
+    from backend.tests.history_fixture import append_turns
+
+    return append_turns(app.state.database, session_id, 1)
+
+
+# Keep the static catch-all after the test routes.
+app.router.routes.sort(key=lambda route: getattr(route, "name", None) == "frontend")

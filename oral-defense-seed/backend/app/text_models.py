@@ -39,6 +39,7 @@ def conversation_headers(session_id: str, role: str):
         "outline",
         "revision",
         "full_answer",
+        "factuality_review",
     }:
         raise ValueError("Unknown conversation role")
     identity = uuid5(UUID(session_id), f"oral-defense-drill:{role}")

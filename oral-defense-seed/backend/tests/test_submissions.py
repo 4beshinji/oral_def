@@ -57,6 +57,33 @@ def test_cancelled_playback_does_not_write_submission(client):
     assert submissions(client) == []
 
 
+def test_confirmation_rolls_back_if_playback_update_fails(client):
+    sid = session(client)
+    playback = start(client, sid, model_ready(client, sid))
+    identity = str(uuid4())
+    with client.app.state.database.connect() as db:
+        db.execute(
+            """CREATE TRIGGER fail_completion BEFORE UPDATE OF status ON conversation_playbacks
+               WHEN NEW.status='completed' BEGIN SELECT RAISE(ABORT, 'injected failure'); END"""
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="injected failure"):
+        ended(client, sid, playback, identity)
+    assert submissions(client) == []
+    saved = snapshot(client, sid)
+    assert saved["conversation"]["playback_id"] == playback["playback_id"]
+    assert saved["turns"][0]["confirmed_answer_en"] is None
+    with client.app.state.database.connect() as db:
+        assert (
+            db.execute("SELECT count(*) FROM requests WHERE request_id=?", (identity,)).fetchone()[
+                0
+            ]
+            == 0
+        )
+        db.execute("DROP TRIGGER fail_completion")
+    ended(client, sid, playback, identity)
+    assert len(submissions(client)) == 1
+
+
 def test_submission_is_immutable_direct_update(client):
     sid = session(client)
     playback = start(client, sid, model_ready(client, sid))

@@ -11,10 +11,12 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException
 
 from . import audio, contexts, dictation, pronunciation
+from .asr import ASR
 from .config import ROOT, Settings
 from .conversation import install_conversation
 from .db import (
     Database,
+    MigrationError,
     backup_database,
     digest,
     digest_bytes,
@@ -30,6 +32,9 @@ from .db import (
 )
 from .documents import install_documents
 from .errors import APIError
+from .free_speech import install_free_speech
+from .generation import generate_text, save_generation
+from .history import child_page, hydrate_turn, install_history
 from .providers import Providers
 from .schemas import (
     TEXT_ROLES,
@@ -46,15 +51,18 @@ from .schemas import (
     SpeechPreviewInput,
     TTSInput,
 )
+from .sharing import export_shared_session
 
 
 def create_app(settings=None):
     settings = settings or Settings()
     providers = Providers(settings)
+    asr = ASR(settings)
     database = Database(settings.data_dir, speech_defaults=providers.speech_catalog.defaults())
     app = FastAPI(title="Oral Defense Drill", version="0.4.0")
     app.state.database = database
     app.state.providers = providers
+    app.state.asr = asr
     audio_root = (settings.data_dir / "audio").resolve()
 
     @app.exception_handler(APIError)
@@ -223,20 +231,28 @@ def create_app(settings=None):
         try:
             with database.connect() as db:
                 result = operation(db)
-                db.execute(
-                    "UPDATE requests SET status='done',result_json=? WHERE request_id=?",
+                committed = db.execute(
+                    "UPDATE requests SET status='done',result_json=? WHERE request_id=? AND status='processing'",
                     (encode(result), request_id),
                 )
+                if committed.rowcount != 1:
+                    raise APIError(409, "stale_operation", "中断された要求の結果は保存できません。")
             return result
         except sqlite3.IntegrityError as exc:
             with database.connect() as db:
-                db.execute("UPDATE requests SET status='failed' WHERE request_id=?", (request_id,))
+                db.execute(
+                    "UPDATE requests SET status='failed' WHERE request_id=? AND status='processing'",
+                    (request_id,),
+                )
             raise APIError(
                 409, "conflict", "同時操作と競合しました。もう一度お試しください。", True
             ) from exc
         except Exception:
             with database.connect() as db:
-                db.execute("UPDATE requests SET status='failed' WHERE request_id=?", (request_id,))
+                db.execute(
+                    "UPDATE requests SET status='failed' WHERE request_id=? AND status='processing'",
+                    (request_id,),
+                )
             raise
 
     def capabilities():
@@ -258,6 +274,12 @@ def create_app(settings=None):
                 "provider": settings.pronunciation_provider,
                 "status": "unavailable",
                 "control_gate_passed": False,
+            },
+            "asr": {
+                "provider": settings.asr_provider,
+                "available": asr.available(),
+                "model_id": "faster-whisper-base.en" if asr.available() else None,
+                "local": True,
             },
             "limits": {
                 "questions": 6,
@@ -315,13 +337,16 @@ def create_app(settings=None):
                             "text_model": targets["examiner"],
                             "role_models": targets,
                             "speech_models": speech_models,
+                            "prepare_documents": body.prepare_documents,
                         }
                     ),
                     "active",
                 ),
             )
-            if body.mode == "shadowing":
-                db.execute("INSERT INTO conversations (id) VALUES (?)", (session_id,))
+            if body.mode in {"shadowing", "free_speech"}:
+                db.execute(
+                    "INSERT INTO conversations (id,mode) VALUES (?,?)", (session_id, body.mode)
+                )
         return {"session_id": session_id}
 
     @app.get("/v1/sessions")
@@ -366,78 +391,28 @@ def create_app(settings=None):
                 if ids and session["turns_has_more"]
                 else None
             )
-            session["turns"] = [turn_row(db, turn_id) for turn_id in ids]
-            for turn in session["turns"]:
-                turn["coach_messages"] = []
-                for value in db.execute(
-                    "SELECT * FROM coach_messages WHERE turn_id=? ORDER BY created_at",
-                    (turn["id"],),
-                ):
-                    msg = dict(value)
-                    msg["response"] = json.loads(msg.pop("response_json"))
-                    turn["coach_messages"].append(msg)
-                turn["exercises"] = []
-                for value in db.execute(
-                    "SELECT * FROM exercises WHERE turn_id=? ORDER BY created_at", (turn["id"],)
-                ):
-                    exercise = dict(value)
-                    exercise["attempts"] = []
-                    for value in db.execute(
-                        "SELECT * FROM attempts WHERE exercise_id=? ORDER BY created_at",
-                        (exercise["id"],),
-                    ):
-                        attempt = dict(value)
-                        attempt["audio_meta"] = json.loads(attempt.pop("audio_meta_json"))
-                        legacy_result = attempt.pop("result_json")
-                        run = db.execute(
-                            "SELECT * FROM assessment_runs WHERE attempt_id=? ORDER BY created_at DESC,rowid DESC LIMIT 1",
-                            (attempt["id"],),
-                        ).fetchone()
-                        attempt["assessment"] = None
-                        if run is not None:
-                            assessment = dict(run)
-                            assessment["result"] = json.loads(
-                                assessment.pop("result_json") or "null"
-                            )
-                            assessment["config"] = json.loads(
-                                assessment.pop("config_json") or "null"
-                            )
-                            attempt["assessment"] = assessment
-                        source = run["result_json"] if run is not None else legacy_result
-                        attempt["result"] = json.loads(source or "null")
-                        exercise["attempts"].append(attempt)
-                    turn["exercises"].append(exercise)
-                turn["has_recording"] = any(
-                    a["audio_id"] for e in turn["exercises"] for a in e["attempts"]
-                )
-                turn["transcript"] = None
-                turn["assistance"] = [
-                    dict(v)
-                    for v in db.execute(
-                        "SELECT * FROM assistance WHERE turn_id=? ORDER BY created_at",
-                        (turn["id"],),
-                    )
-                ]
-            session["playbacks"] = [
-                {**dict(p), "tts_settings": json.loads(p["tts_settings_json"])}
-                for p in db.execute(
-                    "SELECT * FROM conversation_playbacks WHERE session_id=? ORDER BY rowid",
-                    (session_id,),
-                )
-            ]
-            for playback in session["playbacks"]:
-                playback.pop("tts_settings_json")
-            session["requests"] = []
-            for saved_request in db.execute(
-                "SELECT request_id,action,status,created_at,payload_json FROM requests WHERE session_id=? ORDER BY created_at",
+            session["confirmed_turns_total"] = db.execute(
+                """SELECT count(*) FROM turns t LEFT JOIN turn_submissions s ON s.turn_id=t.id
+                   WHERE t.session_id=? AND COALESCE(s.answer_text,t.confirmed_answer_en) IS NOT NULL""",
                 (session_id,),
-            ):
-                request_info = dict(saved_request)
-                stored_payload = json.loads(request_info.pop("payload_json"))
-                request_info["provider_configuration"] = stored_payload.get(
-                    "provider_configuration"
-                )
-                session["requests"].append(request_info)
+            ).fetchone()[0]
+            session["turns"] = [hydrate_turn(db, turn_row(db, tid)) for tid in ids]
+            playbacks = child_page(db, "conversation_playbacks", "session_id", session_id, limit=50)
+            session["playbacks"] = playbacks["items"]
+            session["playbacks_total"] = playbacks["total"]
+            for playback in session["playbacks"]:
+                playback["tts_settings"] = json.loads(playback.pop("tts_settings_json"))
+            requests = child_page(db, "requests", "session_id", session_id, limit=50)
+            session["requests_total"] = requests["total"]
+            session["requests"] = [
+                {
+                    **{key: item[key] for key in ("request_id", "action", "status", "created_at")},
+                    "provider_configuration": json.loads(item["payload_json"]).get(
+                        "provider_configuration"
+                    ),
+                }
+                for item in requests["items"]
+            ]
             session["documents"] = []
             for document in db.execute(
                 "SELECT * FROM session_documents WHERE session_id=? ORDER BY created_at",
@@ -483,15 +458,17 @@ def create_app(settings=None):
             if before is None:
                 records = db.execute(
                     "SELECT id FROM turns WHERE session_id=? ORDER BY ordinal DESC LIMIT ?",
-                    (sid, size),
+                    (sid, size + 1),
                 ).fetchall()
             else:
                 records = db.execute(
                     "SELECT id FROM turns WHERE session_id=? AND ordinal<? ORDER BY ordinal DESC LIMIT ?",
-                    (sid, before, size),
+                    (sid, before, size + 1),
                 ).fetchall()
-            items = [turn_row(db, record["id"]) for record in records][::-1]
-        next_before = items[0]["ordinal"] if items and len(records) == size else None
+            items = [hydrate_turn(db, turn_row(db, record["id"])) for record in records[:size]][
+                ::-1
+            ]
+        next_before = items[0]["ordinal"] if len(records) > size else None
         return {"turns": items, "next_before": next_before}
 
     @app.put("/v1/sessions/{session_id}/text-model")
@@ -539,7 +516,9 @@ def create_app(settings=None):
             target = providers.catalog.from_saved(
                 json.loads(session["settings_json"])["role_models"]["examiner"]
             )
-            result = providers.text("examiner", messages, session_id=sid, target=target)
+            result, provenance = generate_text(
+                providers, "examiner", messages, session_id=sid, target=target
+            )
             if result["follow_up"] and (not turns or count >= 2 or turns[-1]["unable_to_answer"]):
                 raise APIError(
                     502,
@@ -559,6 +538,7 @@ def create_app(settings=None):
                     count + 1 if result["follow_up"] else 0,
                 ),
             )
+            save_generation(db, "turns", turn_id, provenance)
             return row(db, "turns", turn_id)
 
         return idempotent(sid, f"question:{sid}", body, operation)
@@ -572,30 +552,53 @@ def create_app(settings=None):
             turn, session = owner_of_turn(db, tid)
 
         def operation(db):
-            active_turn(db, tid)
+            turn, session = owner_of_turn(db, tid)
+            flow = db.execute("SELECT * FROM conversations WHERE id=?", (session["id"],)).fetchone()
+            if flow is None:
+                active_turn(db, tid)
+            elif flow["status"] == "ended":
+                raise APIError(409, "ended", "終了済みの会話です。")
             history = [
                 dict(h)
                 for h in db.execute(
-                    "SELECT * FROM coach_messages WHERE session_id=? ORDER BY created_at",
-                    (session["id"],),
+                    """SELECT c.* FROM coach_messages c JOIN turns t ON t.id=c.turn_id
+                       WHERE c.session_id=? AND t.ordinal<=? ORDER BY c.rowid DESC LIMIT 12""",
+                    (session["id"], turn["ordinal"]),
                 )
-            ]
-            if len(history) >= 12:
+            ][::-1]
+            if flow is None and len(history) >= 12:
                 raise APIError(409, "coach_limit", "Coachは1セッション12往復までです。")
+            saved = json.loads(session["settings_json"])
             messages = contexts.coach_messages(
                 pack=json.loads(session["pack_snapshot_json"]),
                 research_brief=session["research_brief"],
-                turns=turns_for(db, session["id"]),
+                turns=[t for t in turns_for(db, session["id"]) if t["ordinal"] <= turn["ordinal"]],
                 current_question=turn["question_en"],
                 history=history,
                 level=body.level,
                 user_note=body.user_note,
                 draft=body.draft,
+                scenario=session["scenario"],
+                settings={k: saved[k] for k in ("language_level", "technical_depth", "strictness")},
             )
-            target = providers.catalog.from_saved(
-                json.loads(session["settings_json"])["role_models"][body.level]
+            target = providers.catalog.from_saved(saved["role_models"][body.level])
+            result, provenance = generate_text(
+                providers, body.level, messages, session_id=session["id"], target=target
             )
-            result = providers.text(body.level, messages, session_id=session["id"], target=target)
+            db.execute("BEGIN IMMEDIATE")
+            owner_of_turn(db, tid)
+            live_request = db.execute(
+                "SELECT status FROM requests WHERE request_id=?", (str(body.request_id),)
+            ).fetchone()
+            live_flow = db.execute(
+                "SELECT status FROM conversations WHERE id=?", (session["id"],)
+            ).fetchone()
+            if (
+                not live_request
+                or live_request["status"] != "processing"
+                or (live_flow and live_flow["status"] == "ended")
+            ):
+                raise APIError(409, "stale_operation", "中断・終了した支援要求です。")
             message_id = uid()
             db.execute(
                 "INSERT INTO coach_messages (id,session_id,turn_id,level,user_note,draft,response_json,created_at) VALUES (?,?,?,?,?,?,?,?)",
@@ -610,8 +613,9 @@ def create_app(settings=None):
                     now(),
                 ),
             )
+            save_generation(db, "coach_messages", message_id, provenance)
             assistance(db, tid, None, "coach_" + body.level)
-            return {"id": message_id, "response": result}
+            return {"id": message_id, "turn_id": tid, "response": result}
 
         return idempotent(session["id"], f"coach:{tid}", body, operation)
 
@@ -759,9 +763,9 @@ def create_app(settings=None):
         audio_id, attempt_id = uid(), uid()
         temp_path = audio_root / (audio_id + ".part" + extension)
         path = audio_root / (audio_id + extension)
-        temp_path.write_bytes(data)
         try:
-            media = await asyncio.to_thread(audio.inspect_upload, temp_path)
+            temp_path.write_bytes(data)
+            media = await asyncio.to_thread(providers.work.run, audio.inspect_upload, temp_path)
             metadata = {
                 **media,
                 "capture": capture_data,
@@ -770,6 +774,7 @@ def create_app(settings=None):
             }
             temp_path.replace(path)
             with database.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
                 session_row = db.execute(
                     "SELECT deletion_status FROM sessions WHERE id=?", (session["id"],)
                 ).fetchone()
@@ -950,7 +955,8 @@ def create_app(settings=None):
                     True,
                 )
         try:
-            result = pronunciation.assess(
+            result = providers.work.run(
+                pronunciation.assess,
                 path,
                 exercise["reference_text"],
                 settings.pronunciation_provider,
@@ -966,6 +972,7 @@ def create_app(settings=None):
                 db.execute("UPDATE requests SET status='failed' WHERE request_id=?", (request_id,))
             raise
         with database.connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             session_row = db.execute(
                 "SELECT deletion_status FROM sessions WHERE id=?", (session["id"],)
             ).fetchone()
@@ -1023,11 +1030,11 @@ def create_app(settings=None):
         selection = providers.speech_catalog.validate(body.model)
         text = "Hello! Tell me about your research. What evidence supports your idea?"
         if selection == "configured":
-            data = providers.speech(text, settings.tts_voice)
+            data = providers.work.run(providers.speech, text, settings.tts_voice)
             if data is None:
                 raise APIError(409, "tts_unavailable", "保存TTSは未設定です。")
         else:
-            data = providers.speech_catalog.synthesize(text, selection)
+            data = providers.work.run(providers.speech_catalog.synthesize, text, selection)
         audio.validate_tts(data)
         return Response(data, media_type="audio/wav")
 
@@ -1072,17 +1079,30 @@ def create_app(settings=None):
             if cached:
                 assistance(db, turn["id"], exercise_id, "tts_requested")
                 return {"status": "ok", "audio_id": cached["id"]}
+        provenance = {
+            "schema_version": "1.0",
+            "kind": "speech",
+            "selection": selection,
+            "configuration": providers.speech_catalog.cache_identity(selection, voice),
+            "input_hash": digest(text),
+            "started_at": now(),
+        }
         data = (
-            providers.speech(text, voice)
+            providers.work.run(providers.speech, text, voice)
             if selection == "configured"
-            else providers.speech_catalog.synthesize(text, selection)
+            else providers.work.run(providers.speech_catalog.synthesize, text, selection)
         )
+        provenance["finished_at"] = now()
+        provenance["output_hash"] = digest_bytes(data)
         audio.validate_tts(data)
         audio_id = uid()
         path = audio_root / (audio_id + ".wav")
         path.write_bytes(data)
         try:
             with database.connect() as db:
+                db.execute("BEGIN IMMEDIATE")
+                if row(db, "sessions", session["id"])["deletion_status"] != "active":
+                    raise APIError(409, "session_deleting", "削除中のセッションです。")
                 db.execute(
                     "INSERT INTO audio_files (id,session_id,filename,media_type,cache_key,kind,storage_key,content_hash,media_json,save_status) VALUES (?,?,?,?,?,?,?,?,NULL,'ready')",
                     (
@@ -1096,6 +1116,7 @@ def create_app(settings=None):
                         digest_bytes(data),
                     ),
                 )
+                save_generation(db, "audio_files", audio_id, encode(provenance))
                 assistance(db, turn["id"], exercise_id, "tts_requested")
         except Exception:
             path.unlink(missing_ok=True)
@@ -1120,16 +1141,8 @@ def create_app(settings=None):
 
     @app.get("/v1/sessions/{session_id}/export")
     def export_session(session_id: UUID):
-        # Share export: full public conversation, no secrets or local paths.
-        payload = {
-            "schema_version": "1.0",
-            "mode": "share",
-            "exported_at": now(),
-            "providers": capabilities(),
-            "session": snapshot(str(session_id), turn_limit=None),
-        }
         return JSONResponse(
-            payload,
+            export_shared_session(database, str(session_id)),
             headers={
                 "Content-Disposition": f'attachment; filename="oral-defense-{session_id}.json"'
             },
@@ -1152,8 +1165,19 @@ def create_app(settings=None):
 
         name = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         destination = settings.data_dir / "backups" / name
-        manifest = backup_database(database, destination)
-        return {"name": name, "manifest": manifest, "verify": verify_backup(destination)}
+        try:
+            manifest = backup_database(database, destination)
+            report = verify_backup(destination)
+        except (MigrationError, OSError, sqlite3.Error):
+            raise APIError(
+                503,
+                "backup_incomplete",
+                "backupが完了しませんでした。保存・削除処理や空き容量を確認して再実行してください。",
+                True,
+            ) from None
+        if not report["ok"]:
+            raise APIError(503, "backup_invalid", "backupの整合性検証に失敗しました。", True)
+        return {"name": name, "manifest": manifest, "verify": report}
 
     @app.get("/v1/maintenance/backup/{name}")
     def check_backup(name: str):
@@ -1162,7 +1186,9 @@ def create_app(settings=None):
         return verify_backup(settings.data_dir / "backups" / name)
 
     install_conversation(app, database, providers, tts)
+    install_free_speech(app, database, providers, asr)
     install_documents(app, database, settings)
+    install_history(app, database)
 
     static_dir = ROOT / "frontend/dist"
     if static_dir.is_dir():

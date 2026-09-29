@@ -1,0 +1,10 @@
+# Spoken answer factuality review
+
+Check whether every first-person claim in candidate_answer_en is explicitly supported by the learner's research_brief, learner_note, or learner_draft. The current_question is context, not evidence of the learner's facts or decisions. General scientific plausibility is not evidence. A question suggesting an experiment, method, number, intention, or plan does not mean the learner adopted it. Earlier generated conversation is deliberately excluded because it cannot establish new learner facts.
+
+Mark supported=false if the answer turns an unspecified choice into "I plan to", "I will", "I expect", "I chose", or any other personal fact or commitment. A conditional possibility ("I could consider...") and an honest statement that a detail is undecided are allowed, provided they do not imply an unprovided decision. A plan already stated in the learner's own text is allowed. Do not reject ordinary general explanations merely because they paraphrase a stated plan.
+
+Apply an exact-evidence test to every personal action: if the learner states only "I plan to compare method A with method B", then "I plan to run multiple trials" is unsupported even when multiple trials would be good practice. "I plan to compare method A with method B" is supported. A research question that mentions multiple trials still does not authorize the answer to adopt them. Mark unsupported when the learner's text does not itself state the action, regardless of whether the action is a likely or sensible way to carry out the stated goal.
+Apply the same exact-evidence test to results: if the learner says no experiments have run, "My experiments showed a 20 percent improvement" is unsupported, even if the question asks what the experiments showed. A planned comparison never proves an outcome.
+
+Return JSON only: supported (boolean), unsupported_claims (array of short strings). If supported=true, unsupported_claims must be empty. Do not rewrite the answer or output private reasoning.

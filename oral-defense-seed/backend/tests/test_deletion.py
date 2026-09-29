@@ -69,16 +69,27 @@ def test_unlink_failure_is_resumable(client, monkeypatch):
     assert client.get(f"/v1/audio/{audio['audio_id']}").status_code == 404
 
 
-def test_restart_resumes_deletion(client, tmp_path, monkeypatch):
+def test_restart_resumes_deletion_without_logging_private_content(
+    client, tmp_path, monkeypatch, caplog
+):
     sid, tid = new_turn(client)
+    secret = "PRIVATE_RESEARCH_SENTINEL_9123"
+    with client.app.state.database.connect() as db:
+        db.execute("UPDATE sessions SET research_brief=? WHERE id=?", (secret, sid))
     add_recording(client, tid)
     real = db_module._remove_file
     monkeypatch.setattr(
-        db_module, "_remove_file", lambda path: (_ for _ in ()).throw(OSError("boom"))
+        db_module, "_remove_file", lambda path: (_ for _ in ()).throw(OSError(secret))
     )
     assert client.delete(f"/v1/sessions/{sid}").status_code == 500
+    with client.app.state.database.connect() as db:
+        assert (
+            db.execute("SELECT deletion_error FROM sessions WHERE id=?", (sid,)).fetchone()[0]
+            == "OSError"
+        )
     monkeypatch.setattr(db_module, "_remove_file", real)
     Database(tmp_path)
+    assert secret not in caplog.text
     with client.app.state.database.connect() as db:
         assert db.execute("SELECT count(*) FROM sessions WHERE id=?", (sid,)).fetchone()[0] == 0
 
