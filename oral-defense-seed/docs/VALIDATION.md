@@ -1,6 +1,116 @@
 # 検証記録
 
-> 既存実装の検証記録です。AC番号は当時の試験識別子で、現在のSH/FS条件への合格を意味しません。新しい自動会話仕様は未検証です。
+## 2026-09-29: Kaldi GOP候補の実音声スモーク
+
+- Kaldi公式ソースをCPUでビルドし、公開M13 chainモデルとSpeechOcean762の実話者録音1件でMFCC・i-vector・モデル出力・アラインメント・GOP計算まで実行した。GOPの21音素値は出たが、全非無声音素が1フレームに潰れ、通常設定では333フレーム中312を無音へ割り当てた。3倍間引きでも111中90フレームが無音だった。[測定値](validation/kaldi-p0-smoke-2026-09-29.json)と[P0報告](P0_REPORT.md)を参照。
+- この候補は正常読みの有効時刻区間ゲートを通らないため、音響providerは`unavailable`のまま。1件の失敗から一般的な誤音診断精度を推測しない。適合non-chainモデルと別話者の対照実験が必要。
+
+## 2026-09-29: 自由発話FS01〜FS04の実装検証
+
+- `faster-whisper==1.2.1`、固定した英語`base.en`モデルをCPU int8で実行。モデルrevisionとSHA-256は`setup_asr.py`で固定・照合する。ローカルPiperで合成した「I have not run the experiment yet.」のWAVを、自由発話の録音upload→実ASR→最終返答確定APIへ通し、同文の認識、`free_speech_transcript`の確定元、録音有無を確認した。人間のマイク音声・認識精度の測定ではない。
+- `backend/tests/test_free_speech.py`で同キー録音upload・同要求の確定重複抑止、無音/ASR失敗時の未確定、手入力の別由来、停止中のモード変更後に届く旧認識結果の不採用を検証。旧認識の画面後処理が新しい会話状態を停止しないよう、停止要求のrevision不一致も409で確認した。migration 11は空DB、旧DB、turn・確定返答・会話状態・音声ファイルのあるv10 fixtureで保持と整合性を確認した。実利用DBの非空コピーは未入手。
+- 全backend `uv run --locked pytest -q`: **182 passed**。全Playwright: **17 passed**（自由発話の手入力と次問への進行、Chrome仮想マイクの録音→ASR未設定のエラー→reload後も録音保持、過去録音の表示を含む）。TypeScript/Vite build、Ruff check/format、Prettier、`git diff --check`成功。実ASRのChrome経由操作と人間マイク品質は未確認。
+- 音響的な発音点数は実装していない。ASR transcriptの一致を発音評価とみなさない。FS01〜FS04のAPI状態遷移は確認したが、実録音を含む受け入れは継続する。
+
+## 2026-09-29: RV06 実モデル13往復と未提示計画の抑止
+
+- Radeon RX 6900 XT上の保存済みQwen GGUF、`json_schema`、temperature 0、ローカルPiper/Kokoroでゼミの合成概要をブラウザから13往復実行。最終の[質問・公開返答記録](validation/real-seminar-13-2026-09-29.json)は13確定、保存音声の正常再生26件、約411秒、ブラウザエラー0、疑問詞以降を含む同一質問0件。実人間マイクは使っていない。
+- モデルが同じ質問を返す場合、直近12問との一致を確認して再生成し、なお重複する場合は事実を断定しない汎用質問へ切り替える。今回の回復質問は6件。前置きを変えた同じ疑問文、既出論点に近い回復候補も検出・回避する回帰を追加した。
+- Coachの候補は本人入力の概要・メモ・下書きだけでモデル審査し、明示されない一人称の計画・結果表現は文字列照合でも拒否する。今回の候補置換は3件。モデル審査単独では未提示計画を見逃したため、両方の判定を生成来歴へ保存した。後続の時制表現に「実験に取り組んでいる」とも読める文が2件あり、この実行後に進捗表現の追加ガードとCoachプロンプトを修正した。追加ガードは単体・API回帰で確認し、実モデル13往復の再実行はしていない。
+- 途中の実モデル検証では7問目の同一質問による停止、前置きのみ異なる質問の再発、Coachが未提示の複数試行計画を本人の計画とした事例を検出した。最終実行は機械的な13往復・録音なしの自動進行を通過したが、狭い合成概要では返答が定型化し、回復質問への依存が多い。未知の資料・人間の学術レビュー・一般的な事実性の合格は主張しない。
+- 追加後の全backend回帰は`uv run --locked pytest -q` **175 passed**（進捗表現ガード追加前）。Ruff check/format、`git diff --check`成功。全Playwrightは**15 passed**で、単独復唱の失敗→reload→同キー再送、同時録音の次問前停止、51ターン履歴も確認。進捗表現ガード後の最終回帰は下記追記を参照。
+- 進捗表現ガードと質問重複検出後、`uv run --locked pytest -q` **176 passed**、全Playwright **15 passed**、TypeScript/Vite build、Ruff check/format、Prettier、`git diff --check`成功。進捗表現ガードの実モデル再実行はしていない。
+- その後、録音rename故障と再起動後の旧質問生成に対する故障注入を追加。対象試験は`test_recording.py` **11 passed**、`test_nonblocking.py` **9 passed**。全回帰の更新件数は最終チェックに記録する。
+- 削除失敗の例外文と研究概要に秘密sentinelを入れて再起動を行い、DBには例外型だけを残しログにsentinelを出さないことを`test_deletion.py` **6 passed**の一例で確認。実運用ログ全体の監査ではない。
+- 上記の録音・中断・削除故障注入後の全backend回帰は**178 passed**（依存側の非推奨警告2件）。Ruff check/format、変更frontendのPrettier、`git diff --check`成功。最後のUI変更後の全Playwrightは**15 passed**、TypeScript/Vite build成功。
+
+## 2026-09-29: RV02 固定事実性ケースの実モデル再判定
+
+- ROCm 7.2.4で`gfx1030`/Radeon RX 6900 XTを認識。保存済み12.6 GB GGUFを既存llama.cppでGPU 0へ読み込み、`/health`成功後に6件生成。検証後にサーバーを停止。
+- 対象: `compatible/qwen38-27b-abliterated`、ローカル`127.0.0.1:10000/v1`、`json_schema`、temperature 0、各ケース1回。入力、出力、prompt/output hash、判定理由は[結果JSON](validation/factuality-after-2026-09-29.json)。外部LLMへの送信なし。
+- 凍結した6ケースを意味で判定して**6/6 passed**。旧[結果](validation/factuality-before-2026-09-22.json)の3/6から、評価回数・時制・参考論文の成果混同の既知失敗が今回の出力では再発しなかった。
+- 1モデル・各1回の固定例に限る。未知の質問や別資料への一般的な正確性、長い会話での安定性、人間による学術内容レビューを証明しない。
+
+## 2026-09-29: 資料準備とPack固定
+
+- 環境: Python 3.12、mock text/TTS、Chrome Playwright。実LLM・実論文へのネットワーク取得は行っていない。
+- `uv run --locked pytest -q backend/tests/test_documents.py backend/tests/test_conversation.py`: **23 passed**。PDF uploadとサイズ/形式拒否、準備前の開始拒否、採用segment・Pack/hash/共有exportの一致、mock provider入力、開始後の再固定拒否を確認。
+- `npm --prefix frontend run build`: 成功。`npm --prefix frontend run test:e2e -- --grep 'prepare a brief'`: **1 passed**。概要追加・採用・会話画面への移行と固定Packを確認。
+- 全backend回帰の初回は会話音声設定1件が失敗（新規会話の初期状態をrunningにしたため）。初期状態を既存のpausedへ戻し、`uv run --locked pytest -q`で**159 passed**、全Playwrightで**13 passed**。Ruff check/formatも成功。
+- URL取得時はDNSで確認した公開IPへ接続し、元のHost/TLS名を維持するよう変更。接続先・Host・SNIをmock transportで確認。変更後の全backend回帰は**160 passed**。
+- PDF抽出をイベントループ外へ移し、抽出中のsession削除後は資料を保存しないことを並行fixtureで確認。Pack固定中のresumeも同じ固定版を参照。資料fixtureは**17 passed**。
+- これは資料経路の状態・保存境界のfixture検証。実モデルの事実性、OCR、URLの実ネットワーク、並行競合を合格扱いにしない。
+
+## 2026-09-29: 会話の単独復唱
+
+- Chrome仮想マイクで会話停止中の録音、uploadを一回遮断した時のIndexedDB保存、reload後の再送、元参照文への一attempt保存、評価器未設定の状態表示を確認。`npm --prefix frontend run test:e2e -- --grep 'isolated recording survives'`: **1 passed**。
+- お手本を止めずに録音し、再生完了時にマイクを閉じて次ターンへ進むケースもChrome仮想マイクで確認。元attemptは`shadowing_overlap`、評価runは`insufficient_evidence`。`--grep 'overlap recording closes'`: **1 passed**。
+- 同時録音接続後の全Playwright回帰は**15 passed**。
+- `uv run --locked pytest -q backend/tests/test_nonblocking.py`: **8 passed**。同sessionの評価遅延中に次turnへ進むこと、次turn後に元参照文へ録音を送ること、削除中に完了する録音・評価を拒否することを確認。
+- `uv run --locked pytest -q backend/tests/test_recording.py`: **10 passed**。部分書込とDB登録失敗を注入し、一時/確定音声とattempt/audio行を残さないことを確認。
+- 全回帰: `uv run --locked pytest -q` **162 passed**、`npm --prefix frontend run test:e2e` **14 passed**、TypeScript/Vite build、Ruff check/format、変更TypeScriptのPrettier、`git diff --check`が成功。
+- 人間マイクでの音声混入量、ブラウザ保存容量不足、rename自体の故障は未確認。
+
+## 2026-09-29: 旧DBの音声・評価移行
+
+- `uv run --locked pytest -q backend/tests/test_migrations.py`: **13 passed**。初期schemaから、独立練習とshadowingの確定turn、複数attempt、録音ファイル、旧評価結果を移行し、元bytes・件数・hash・確定元・FK/integrityを確認。
+- `uv run --locked pytest -q backend/tests/test_submissions.py`: **5 passed**。返答確定途中のplayback更新失敗を注入し、同一トランザクションの全変更が戻ることを確認。
+- 実利用DBコピー、移行途中の全内容比較は未実施。
+
+## 2026-09-22: 実装再開 — A01ターン所属・A06履歴画面
+
+対象: `d4c0be3`を基点とする作業ツリー（先行の共有export/backup変更を含む）。担当 #9/#3/#4/#6、RV01/RV06、SH05/SH12/SH14/SH15/SH16の該当部分。
+
+- Python 3.12.3、SQLite 3.45.1、Node 24.18.0、localhostのChrome。LLM/TTSはmock、録音はfixtureまたはChrome仮想マイク。
+- `uv run --locked pytest -q`: **147 passed**。TestClientがサンドボックス内では停止するため制限外で実行。uvキャッシュは書込可能な`/tmp/oral-def-uv-cache`を指定。Starlette/httpx/anyioの既存非推奨警告2件。
+- `npm --prefix frontend run test:e2e`: **10 passed**。ローカルテストサーバーとChromeを制限外で実行。TypeScript/Vite build、Ruff check/format、変更TypeScriptのPrettier、`git diff --check`も成功。
+- A01: migration 9を追加。playback/conversation/assistance/submissionの同turn参照、再生出典と親所属の不変性、別turn INSERT/UPDATE拒否を検証。legacy/版8 DBに既存誤参照がある場合、業務データを変更せず移行停止。空DBとlegacy最終schemaの一致、FK/integrityを確認。
+- A06: 通常GETの50ターン・50 playback/request、各turnの20参照文・参照文ごとの20 attemptを制限。全件数とcursorを別に返し、ページ外の録音あり判定を維持。51ターンから52ターン追加後のreloadで、全履歴に重複・欠落なく到達。23参照文・23 attempt・23評価runの境界をAPI/画面で確認。最古の録音をChromeで再生し、履歴閲覧による会話進行がないことを確認。
+- 既存の13往復mock/context予算、共有export、別data dirへのbackup/restore、停止・再開、dictation、独立練習を回帰検証。画面記録は`frontend/test-results/conversation-history.png`（git対象外）。
+
+これらは状態制御・保存・画面のfixture証拠。実LLM13往復の品質、人間マイク、Coach支援/資料/同時録音の未接続経路、A02〜A05/A07と #9-B/#7-Bの最終受け入れは未完了。
+
+> 日付ごとの実測記録です。過去のAC番号は当時の試験識別子で、現在のSH/FS条件全体への合格を意味しません。MVPの現在の範囲と未達は[実装計画](IMPLEMENTATION.md)を参照してください。
+
+## 2026-09-22 RV01共有exportとbackup/restore
+
+担当 #9-A/#20、所見 RV01/RV07、関連 SH05/SH07/SH12/SH15。
+対象: `d4c0be3aa7ddc89d6687526e63855eb25af13045` + 今回の未commit差分（`sharing.py`、`db.py`、`main.py`、API/E2E試験、共有保存ラベルと文書）。
+変更前から存在した計画文書の差分は保持した。子Issueの条件との照合と未達は[DB_AUDIT](DB_AUDIT.md)。
+
+環境: Linux x86_64、Python 3.12.3、SQLite 3.45.1、uv 0.12.5、Node v24.18.0、npm 11.16.0、Chrome 153.0.8010.36。既存のlockと環境を使用。
+providerはmock、評価器はunavailable。音声は無音WAV fixtureまたはChrome仮想マイク。外部LLMへの資料送信、実音声モデル・人間マイクの追加検証は行っていない。
+
+| コマンド | 結果 |
+|---|---|
+| `UV_CACHE_DIR=/tmp/oral-def-uv uv run --locked pytest -q` | **129 passed**、18.61秒。依存側の既知の非推奨警告2件 |
+| `uv run --locked ruff check backend scripts` | 成功（同じ一時UV_CACHE_DIRを使用） |
+| `uv run --locked ruff format --check backend scripts` | 34ファイル成功（同上） |
+| `npm --prefix frontend run build` | TypeScript/Vite成功 |
+| `npm --prefix frontend run test:e2e` | **9 passed**、13.9秒。専用localhostサーバーとChrome |
+| `git diff --check` | 成功 |
+
+制限環境内のTestClientは出力前に停止したため中断し、ローカル通常環境で実行した。書込不可の標準uv cacheは使わず一時cacheを指定。Chromeもlocalhostを利用可能な環境で実行した。
+
+今回の挙動変更:
+
+- 共有exportをschema 2.0へ変更。再開用snapshotから分離した許可項目方式とし、私的Coach履歴・メモ・未採用参照文・内部要求・provider設定・機器ID・任意の評価JSONを除外。既存のローカル履歴は保持する。
+- 正常再生前の参照文を共有せず、確定した参照文のみ録音/評価の所属を保って出力。録音なし・transcript null・確定元を区別する。
+- 会話用Packと異なるhashの新manifestを共有Packにしない。明示採用segmentだけを含め、余分な資料/segment・URL query等を除外。開始時のmanifest固定は未実装のためRV03合格にはしない。
+- backupの一覧を元DBではなく複製済みDBから作り、音声追加/削除との競合を検査。既存保存先の上書きを拒否し、完成manifestを最後に公開。
+- DB指紋を持つbackup manifest 1.1と旧1.0の検証。DB参照から消えたmanifest項目、余剰・欠損・破損・重複・不正パス/symlink・未完了保存・削除中を成功扱いしない。APIは作成失敗時503を返し、内部パスを返さない。
+
+追加試験では修正前にbackupの7ケースが失敗した（未掲載音声、余剰ファイル、不正JSON、壊れたDB、未知manifest版、複製直後の音声追加、既存保存先上書き）。修正後は全件成功。
+復元fixtureは公開返答、Coach私的note、録音、評価run、資料本文/hash、Pack manifestを作り、requests削除後も保持されることを確認。
+backupを別data dirへcopy/verifyし、元data dirを削除して新しいアプリを起動した。通常GET/exportと実音声bytes、DBのFK/integrityを比較して成功した。
+read snapshot試験はstate読取後・turn読取前に実APIから返答を確定し、同一snapshotが旧state/未確定turn、次GETが新state/確定turnを返すことを確認した。
+
+構造整理は共有DTO組立の`sharing.py`への分離と、backup検証処理の分割。適用済みmigration、会話確定・録音APIの挙動は変更していない。
+画面変更は保存リンクの「共有JSON保存」表記。既存3問練習E2Eで通常GETの私的assistance保持と共有側の除外を確認した。
+[スクリーンショット](../frontend/test-results/practice-desktop.png)を生成・目視確認（ローカル生成物、Git対象外）。
+
+未達: [DB_AUDITのA01〜A07](DB_AUDIT.md#親-9-の残作業と期限)。同session内別turn参照の直接SQL制約の不足を一時DBで再現し、その他の故障注入・生成来歴・資料固定・過去詳細取得の不足を条件ごとに記録した。
+GitHub Issueへの転記、既存利用DBの移行、人間の #7-A/#7-B、機能接続後の #9-B は未実施。今回の129件/9件をRV01全体やMVP全体の合格証拠にはしない。
 
 ## 0.4 OpenCodeモデル選択・更新
 

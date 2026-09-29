@@ -104,3 +104,16 @@ Chromeはheadlessで、`--autoplay-policy=no-user-gesture-required`を指定す�
 したがって、**この4例では数値成果の質問は適切だったが、残る3例に出典のない具体化または時制のずれがあった**。プロンプトだけで事実性の要件を満たしたとは判断しない。接続・自動進行は確認済みでも、このモデルによる本人の研究説明を事実に忠実な完成機能とは扱わない。モデル比較や、本人の既知事実との照合は後続の品質改善課題とする。
 
 起動スクリプトの実行でもLLM healthとアプリcapabilitiesのHTTP 200、および`compatible`・`json_schema`・ローカル接続先を確認した。終了後は8000/10000番ポートの待受がなくなり、検証用LLMのGPUメモリが解放された。検証サーバーは常駐させていない。
+
+## 2026-09-29: 長い会話と人間録音の確認手順
+
+13往復の自動検証は起動後に次で再現できる。結果は指定先に保存する。2026-09-29の[実測記録](validation/real-seminar-13-2026-09-29.json)は、ローカルQwen・Piper/Kokoro、Chromeの実再生完了、録音なしで13往復・音声26件を確認した。重複時の回復質問6件と、本人未提示の計画候補の置換3件があり、学術内容の一般的な正確性は確認していない。
+
+```sh
+cd frontend
+VALIDATION_SCENARIOS=seminar VALIDATION_TURNS=13 \
+VALIDATION_OUTPUT=../../.cache/local-validation/long-run \
+node scripts/validate-local.mjs
+```
+
+人間のマイクでの最終確認は未実施。実施時はブラウザで会話を開始し、お手本再生中の同時録音を1件、停止中の単独復唱を1件行う。録音を再生して声・お手本の混入を聴き、元のturnと参照文にattemptが残ること、単独復唱の再読込後の再送、同時録音の`insufficient_evidence`、pause/resume中のマイク停止を確認する。識別できる実録音や研究内容は共有exportへ載せる前に内容を確認する。音響P0の精度判定は[P0報告](P0_REPORT.md)の別条件で行う。

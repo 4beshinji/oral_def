@@ -1,0 +1,47 @@
+{
+  "date": "2026-09-29",
+  "status": "failed_control_smoke",
+  "source": "SpeechOcean762 test recording 000030012",
+  "source_repository_commit": "613968e3b0b789fc33936fb5eba1973176ba7d11",
+  "audio_duration_s": 3.36,
+  "reference_words": 6,
+  "asr_content_check": "matched normalized reference words",
+  "kaldi_commit": "e02e35f0254bb033fab73d1df99fc34123e31d56",
+  "compute_gop_sha256": "468da21751632044c9f7a448c47c3aee657f10dd9bbcafef17eb28172054b75b",
+  "m13_chain_archive_sha256": "47cb7cc2fbe91c7a60fd3d46266c3d459bd766aaffa1dfad789ef57875f1be01",
+  "m13_final_mdl_sha256": "6c4cae54e5d3ecfd5d61c34d5cc138733a769abd88b6969dd62dde56ca2ac955",
+  "m13_extractor_archive_sha256": "431e44aa6c5efdd76566199ffb96e14a3052e025a8c6ee495eb66703663850a7",
+  "speechocean_lexicon_sha256": "049425b86748f312c2a61e73abeff554a0fe047967ac4630fef9689434410a81",
+  "phone_map_sha256": "dc6c287c22170bac9c814b5ace8a8b54e52213ee4e4b9b620c3040e619f8c6d1",
+  "frame_subsampling_1": {
+    "frames": 333,
+    "non_silence_phones": 21,
+    "non_silence_one_frame": 21,
+    "silence_frames": 312,
+    "first_speech_frame": 131,
+    "last_speech_frame": 270
+  },
+  "frame_subsampling_3": {
+    "frames": 111,
+    "non_silence_phones": 21,
+    "non_silence_one_frame": 21,
+    "silence_frames": 90,
+    "first_speech_frame": 44,
+    "last_speech_frame": 90
+  },
+  "gop_pairs": 21,
+  "raw_gop_min": -2.532201,
+  "raw_gop_median": -0.8666077,
+  "raw_gop_max": 0.0,
+  "control_gate_passed": false,
+  "reason_codes": [
+    "all_non_silence_phones_one_frame",
+    "silence_dominates_alignment",
+    "normal_read_control_invalid"
+  ],
+  "limitations": [
+    "one speaker and one utterance only",
+    "raw GOP is not a calibrated pronunciation score",
+    "human microphone not tested"
+  ]
+}

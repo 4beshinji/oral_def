@@ -1,0 +1,147 @@
+{
+  "schema_version": "1.0",
+  "date": "2026-09-29",
+  "scenario": "seminar",
+  "input_kind": "synthetic research brief",
+  "model": {
+    "endpoint": "http://127.0.0.1:10000/v1",
+    "id": "compatible/qwen38-27b-abliterated",
+    "mock": false,
+    "model": "qwen38-27b-abliterated",
+    "protocol": "chat_completions",
+    "provider": "compatible"
+  },
+  "speech_models": {
+    "coach_answer": "piper/ljspeech",
+    "exercise": "piper/ljspeech",
+    "question": "kokoro/sky-anime"
+  },
+  "text_response_format": "json_schema",
+  "temperature": 0,
+  "confirmed_turns": 13,
+  "completed_saved_audio": 26,
+  "elapsed_s": 411.334,
+  "duplicate_question_ordinals": [],
+  "recovery_question_ordinals": [
+    8,
+    9,
+    10,
+    11,
+    12,
+    13
+  ],
+  "answer_candidate_rejected_ordinals": [
+    2,
+    5,
+    13
+  ],
+  "browser_errors": [],
+  "mechanical_passed": true,
+  "review_note": "Manual review found ambiguous wording at turns 3 and 6 (working with experiments); the subsequent stage-phrase guard was added after this run. Six generic recovery questions kept the sparse synthetic brief moving. This run does not establish general factual accuracy or human microphone quality.",
+  "turns": [
+    {
+      "ordinal": 1,
+      "question_en": "You mention comparing expected improvement with random search. What specific aspect of the benchmark functions makes you think Bayesian optimization is worth the extra complexity?",
+      "answer_en": "I plan to compare expected improvement with random search on public benchmark functions. I haven't run the experiments yet, so I don't have specific results or numbers to justify the extra complexity yet.",
+      "question_recovery": false,
+      "answer_policy_rejected_candidate": false,
+      "answer_model_review_supported_candidate": true
+    },
+    {
+      "ordinal": 2,
+      "question_en": "Since you haven't run the experiments yet, how do you plan to handle the uncertainty in your model when choosing the next point to evaluate?",
+      "answer_en": "I haven't decided on that detail yet.",
+      "question_recovery": false,
+      "answer_policy_rejected_candidate": true,
+      "answer_model_review_supported_candidate": true
+    },
+    {
+      "ordinal": 3,
+      "question_en": "That's a good starting point. Since you haven't decided on the uncertainty handling yet, what is your main concern about the cost of each experiment in your lab?",
+      "answer_en": "I'm working with expensive laboratory experiments, but I haven't decided on the specific cost concerns yet.",
+      "question_recovery": false,
+      "answer_policy_rejected_candidate": false,
+      "answer_model_review_supported_candidate": true
+    },
+    {
+      "ordinal": 4,
+      "question_en": "Since you haven't decided on the cost details yet, how do you plan to set up the comparison so that both methods get a fair chance to perform well?",
+      "answer_en": "I plan to compare expected improvement with random search on public benchmark functions, but I haven't decided on the specific setup details yet.",
+      "question_recovery": false,
+      "answer_policy_rejected_candidate": false,
+      "answer_model_review_supported_candidate": true
+    },
+    {
+      "ordinal": 5,
+      "question_en": "You mentioned public benchmark functions. Which specific function are you planning to use first, and why did you choose it?",
+      "answer_en": "I haven't decided on that detail yet.",
+      "question_recovery": false,
+      "answer_policy_rejected_candidate": true,
+      "answer_model_review_supported_candidate": true
+    },
+    {
+      "ordinal": 6,
+      "question_en": "You mentioned expensive laboratory experiments. What is the main reason you chose Bayesian optimization for this setting?",
+      "answer_en": "I'm working with expensive laboratory experiments, and I plan to compare expected improvement with random search on public benchmark functions. I haven't decided on the specific reason for choosing Bayesian optimization yet.",
+      "question_recovery": false,
+      "answer_policy_rejected_candidate": false,
+      "answer_model_review_supported_candidate": true
+    },
+    {
+      "ordinal": 7,
+      "question_en": "You mentioned public benchmark functions. How do you plan to measure whether the comparison is fair, for example by looking at the best value found or the number of evaluations used?",
+      "answer_en": "I plan to compare expected improvement with random search on public benchmark functions, but I haven't decided on the specific way to measure fairness yet.",
+      "question_recovery": false,
+      "answer_policy_rejected_candidate": false,
+      "answer_model_review_supported_candidate": true
+    },
+    {
+      "ordinal": 8,
+      "question_en": "What is the main question your research is trying to answer?",
+      "answer_en": "I plan to compare expected improvement with random search on public benchmark functions, but I haven't decided on the specific details yet.",
+      "question_recovery": true,
+      "answer_policy_rejected_candidate": false,
+      "answer_model_review_supported_candidate": true
+    },
+    {
+      "ordinal": 9,
+      "question_en": "Which assumption in your current research plan is most important to test?",
+      "answer_en": "I plan to compare expected improvement with random search on public benchmark functions, but I haven't decided which assumption is most important to test yet.",
+      "question_recovery": true,
+      "answer_policy_rejected_candidate": false,
+      "answer_model_review_supported_candidate": true
+    },
+    {
+      "ordinal": 10,
+      "question_en": "What observation would make you revise your current approach?",
+      "answer_en": "I plan to compare expected improvement with random search on public benchmark functions, but I haven't decided on the specific observations that would make me revise my approach yet.",
+      "question_recovery": true,
+      "answer_policy_rejected_candidate": false,
+      "answer_model_review_supported_candidate": true
+    },
+    {
+      "ordinal": 11,
+      "question_en": "What is one limitation you expect in your planned method?",
+      "answer_en": "I plan to compare expected improvement with random search on public benchmark functions, but I haven't decided on the specific limitations yet.",
+      "question_recovery": true,
+      "answer_policy_rejected_candidate": false,
+      "answer_model_review_supported_candidate": true
+    },
+    {
+      "ordinal": 12,
+      "question_en": "How would you check that your findings are reproducible?",
+      "answer_en": "I plan to compare expected improvement with random search on public benchmark functions, but I haven't decided on the specific way to check reproducibility yet.",
+      "question_recovery": true,
+      "answer_policy_rejected_candidate": false,
+      "answer_model_review_supported_candidate": true
+    },
+    {
+      "ordinal": 13,
+      "question_en": "What alternative explanation would you want to rule out?",
+      "answer_en": "I haven't decided on that detail yet.",
+      "question_recovery": true,
+      "answer_policy_rejected_candidate": true,
+      "answer_model_review_supported_candidate": true
+    }
+  ]
+}

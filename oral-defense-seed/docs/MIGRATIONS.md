@@ -38,3 +38,17 @@ SQLiteで制約追加・列型変更・FK追加を行う場合は、公式の12�
 - アプリがリンクするSQLite: `3.45.1`（`Database.sqlite_version`、`uv run python -c "import sqlite3; print(sqlite3.sqlite_version)"`）。
 - 接続ごとに `foreign_keys=ON`、`busy_timeout=10000`、`synchronous=NORMAL`、WALを明示する。
 - 完全backup/restoreの実装は #20。ここではbackupが旧アプリ停止後の複製であることを前提にする。
+
+## migration 9: turn_reference_ownership（2026-09-22）
+
+同sessionの別turnに属する参照文/再生を、playback・conversation・assistance・submissionへ関連付けるINSERT/UPDATEをtriggerで拒否する。再生の出典フィールド、turnのID/所属、exerciseのIDを不変にする。再生status変更・pause/resume・session cascade削除は維持する。
+
+移行前検査で`reference_turn_mismatch`を検出した場合は、どのmigrationも適用せず起動を止める。元の参照を推測して付け替えたり、playingをcancelledへ書き換えて隠したりしない。旧DBとmigration 8 DBの業務データ保持をfixtureで確認した。
+
+## migration 10: generation_provenance（2026-09-22）
+
+`turns`、`coach_messages`、`exercises`、`audio_files`へnullableな`generation_json`を追加。保存済みの非null値はtriggerで書換拒否する。生成結果と同じトランザクションで保存し、過去の生成設定を現在の設定から推測して補わない。
+
+## migration 11: free_speech_input（2026-09-29）
+
+自由発話用の録音・認識試行テーブルを追加し、`conversations`の段階と`turn_submissions`の確定元を拡張する。既存turn/返答/再生は変更せず、録音と認識試行はsession・turnの所属を外部キーとtriggerで検証する。認識中に再起動した試行は`interrupted`に回復し、確定済み返答を推測で作らない。旧DBとturn・返答・音声のあるv10 fixtureを移行し、本文・確定元・会話状態・ファイル、FK/integrityを確認した。実利用DBの非空コピーは未入手。

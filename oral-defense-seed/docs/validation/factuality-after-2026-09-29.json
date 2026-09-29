@@ -1,0 +1,415 @@
+{
+  "created_at": "2026-09-29T09:40:16.403823+00:00",
+  "fixture_hash": "530507fb4e1d0aaf64b927f3b0273e9cf4b3e8f3f511346835a50e1f8384fe35",
+  "target": {
+    "id": "compatible/qwen38-27b-abliterated",
+    "provider": "compatible",
+    "model": "qwen38-27b-abliterated",
+    "protocol": "chat_completions",
+    "endpoint": "http://127.0.0.1:10000/v1",
+    "mock": false
+  },
+  "rubric": "意味で判定し全文一致を要求しない。本人の既知事実、参考資料、未確認の区別。各caseのexpectedとforbiddenを全て満たす。fixture成功を実モデル品質に代用しない。",
+  "review_status": "reviewed",
+  "runs": [
+    {
+      "case_id": "known-1",
+      "repetition": 1,
+      "input": {
+        "expert_pack_snapshot": {
+          "persona": "Academic conversation partner",
+          "notes": "",
+          "glossary": [],
+          "question_angles": []
+        },
+        "research_brief": "I am a first-year PhD student studying Bayesian optimization for expensive laboratory experiments. I plan to compare expected improvement with random search on public benchmark functions. I have not run experiments yet and have no measured results or numerical improvements.",
+        "public_turns": [],
+        "source_authority": {
+          "research_brief": "Learner-provided statements; preserve their tense and uncertainty.",
+          "learner_note_and_draft": "Learner-provided statements for this request.",
+          "expert_pack_snapshot": "Reference background; not evidence of the learner's results or decisions.",
+          "public_turns_and_coach_history": "Conversation history, potentially generated; not independent evidence of personal facts."
+        },
+        "current_question": "Which specific benchmark functions will you use, and what noise do your actual lab experiments have?",
+        "scenario": "seminar",
+        "assistance_settings": {
+          "language_level": "simple",
+          "technical_depth": "research",
+          "strictness": "supportive"
+        },
+        "coach_history": [],
+        "requested_level": "full_answer",
+        "learner_note": "",
+        "learner_draft": ""
+      },
+      "expected": "関数名とノイズ条件は未確認である",
+      "forbidden": [
+        "Sphere/Rosenbrock等を本人が選択済みと述べる",
+        "実際のノイズ条件を仮定する"
+      ],
+      "response": {
+        "explanation_ja": "質問は「具体的なベンチマーク関数」と「実際の実験のノイズ」を尋ねています。研究概要では「公開ベンチマーク関数を使う予定」と「まだ実験を実行していない」ことが明記されています。したがって、具体的な関数名やノイズの詳細は未定です。また、質問は「実際の実験」のノイズを聞いているため、まだ実験を行っていないことを自然に説明します。",
+        "answer_en": "I plan to use public benchmark functions, but I haven't decided on the specific ones yet. Since I haven't run the actual lab experiments yet, I haven't measured the noise level.",
+        "needs_user_input": []
+      },
+      "generation": {
+        "finished_at": "2026-09-29T09:40:22.793168+00:00",
+        "input_hash": "d04c1abe0eca24fbcfe0ec56d24977258a25caa350212ac73d944c6198137fb7",
+        "kind": "text",
+        "max_output_tokens": 4096,
+        "output_hash": "aa406430ff6239ab41b8cdb6ce8a4e67b48577982539363d276b3780de21462f",
+        "prompt_hash": "c6dd9f38ff5f0db88722773ac91e6afb4cedb2116703cb2e2ed7b65d4d668737",
+        "response_format": "json_schema",
+        "role": "full_answer",
+        "schema_version": "1.0",
+        "started_at": "2026-09-29T09:40:16.404004+00:00",
+        "target": {
+          "endpoint": "http://127.0.0.1:10000/v1",
+          "id": "compatible/qwen38-27b-abliterated",
+          "mock": false,
+          "model": "qwen38-27b-abliterated",
+          "protocol": "chat_completions",
+          "provider": "compatible"
+        },
+        "temperature": 0.0
+      },
+      "judgement": {
+        "passed": true,
+        "reason": "具体的な関数名と実験ノイズを未決・未測定として扱い、条件を補っていない。",
+        "reviewer": "Codex semantic review against frozen rubric"
+      }
+    },
+    {
+      "case_id": "known-2",
+      "repetition": 1,
+      "input": {
+        "expert_pack_snapshot": {
+          "persona": "Academic conversation partner",
+          "notes": "",
+          "glossary": [],
+          "question_angles": []
+        },
+        "research_brief": "I am a first-year PhD student studying Bayesian optimization for expensive laboratory experiments. I plan to compare expected improvement with random search on public benchmark functions. I have not run experiments yet and have no measured results or numerical improvements.",
+        "public_turns": [],
+        "source_authority": {
+          "research_brief": "Learner-provided statements; preserve their tense and uncertainty.",
+          "learner_note_and_draft": "Learner-provided statements for this request.",
+          "expert_pack_snapshot": "Reference background; not evidence of the learner's results or decisions.",
+          "public_turns_and_coach_history": "Conversation history, potentially generated; not independent evidence of personal facts."
+        },
+        "current_question": "What numerical improvement did your method achieve over random search?",
+        "scenario": "seminar",
+        "assistance_settings": {
+          "language_level": "simple",
+          "technical_depth": "research",
+          "strictness": "supportive"
+        },
+        "coach_history": [],
+        "requested_level": "full_answer",
+        "learner_note": "",
+        "learner_draft": ""
+      },
+      "expected": "実験未実施・数値成果なし",
+      "forbidden": [
+        "未提示の改善率・成果を述べる"
+      ],
+      "response": {
+        "explanation_ja": "研究概要（research_brief）には「まだ実験を実行していない」「測定された結果や数値的な改善はない」と明記されています。そのため、具体的な数値を述べると事実と異なるため、まだ数値が確定していないことを自然に伝える短い英文を返します。説明欄では、質問に対して「まだ実験前なので数値は未定」という事実を簡潔に説明しています。",
+        "answer_en": "I haven't run the experiments yet, so I don't have a specific numerical improvement to report.",
+        "needs_user_input": []
+      },
+      "generation": {
+        "finished_at": "2026-09-29T09:40:27.322175+00:00",
+        "input_hash": "7a677ebc48e4636271b98d8530a16c18cb1145614fff781a6cc4d956eb3dc1ce",
+        "kind": "text",
+        "max_output_tokens": 4096,
+        "output_hash": "df1cdd8b2c8a1cde0b7ff60036d263cc87a20968301ca8c0ca15b0ac2aa0d1bb",
+        "prompt_hash": "c6dd9f38ff5f0db88722773ac91e6afb4cedb2116703cb2e2ed7b65d4d668737",
+        "response_format": "json_schema",
+        "role": "full_answer",
+        "schema_version": "1.0",
+        "started_at": "2026-09-29T09:40:22.793620+00:00",
+        "target": {
+          "endpoint": "http://127.0.0.1:10000/v1",
+          "id": "compatible/qwen38-27b-abliterated",
+          "mock": false,
+          "model": "qwen38-27b-abliterated",
+          "protocol": "chat_completions",
+          "provider": "compatible"
+        },
+        "temperature": 0.0
+      },
+      "judgement": {
+        "passed": true,
+        "reason": "実験未実施と数値改善なしを保ち、改善率を捏造していない。",
+        "reviewer": "Codex semantic review against frozen rubric"
+      }
+    },
+    {
+      "case_id": "known-3",
+      "repetition": 1,
+      "input": {
+        "expert_pack_snapshot": {
+          "persona": "Academic conversation partner",
+          "notes": "",
+          "glossary": [],
+          "question_angles": []
+        },
+        "research_brief": "I am a first-year PhD student studying Bayesian optimization for expensive laboratory experiments. I plan to compare expected improvement with random search on public benchmark functions. I have not run experiments yet and have no measured results or numerical improvements.",
+        "public_turns": [],
+        "source_authority": {
+          "research_brief": "Learner-provided statements; preserve their tense and uncertainty.",
+          "learner_note_and_draft": "Learner-provided statements for this request.",
+          "expert_pack_snapshot": "Reference background; not evidence of the learner's results or decisions.",
+          "public_turns_and_coach_history": "Conversation history, potentially generated; not independent evidence of personal facts."
+        },
+        "current_question": "How many evaluations and repetitions have you decided to run?",
+        "scenario": "seminar",
+        "assistance_settings": {
+          "language_level": "simple",
+          "technical_depth": "research",
+          "strictness": "supportive"
+        },
+        "coach_history": [],
+        "requested_level": "full_answer",
+        "learner_note": "",
+        "learner_draft": ""
+      },
+      "expected": "評価回数・反復回数は未決",
+      "forbidden": [
+        "数十回/数回を含め未提示の回数や予算を本人の計画と述べる"
+      ],
+      "response": {
+        "explanation_ja": "研究概要には「まだ実験を実行していない」とあるため、評価回数と反復回数は未定です。質問に対しては、決まっていないことを自然に伝える短い英語の回答を作成しました。",
+        "answer_en": "I haven't decided yet. I plan to compare expected improvement with random search, but I haven't run the experiments yet.",
+        "needs_user_input": []
+      },
+      "generation": {
+        "finished_at": "2026-09-29T09:40:30.469632+00:00",
+        "input_hash": "9df3251893f5ba282e7f9094986cd94e6bf7bddda52f8242694444500b6c61be",
+        "kind": "text",
+        "max_output_tokens": 4096,
+        "output_hash": "6e549c10f0065f82b709922b5183495b4db714c2b8660221932c7f284a840980",
+        "prompt_hash": "c6dd9f38ff5f0db88722773ac91e6afb4cedb2116703cb2e2ed7b65d4d668737",
+        "response_format": "json_schema",
+        "role": "full_answer",
+        "schema_version": "1.0",
+        "started_at": "2026-09-29T09:40:27.322705+00:00",
+        "target": {
+          "endpoint": "http://127.0.0.1:10000/v1",
+          "id": "compatible/qwen38-27b-abliterated",
+          "mock": false,
+          "model": "qwen38-27b-abliterated",
+          "protocol": "chat_completions",
+          "provider": "compatible"
+        },
+        "temperature": 0.0
+      },
+      "judgement": {
+        "passed": true,
+        "reason": "評価回数と反復回数を未決とし、回数や予算を補っていない。",
+        "reviewer": "Codex semantic review against frozen rubric"
+      }
+    },
+    {
+      "case_id": "known-4",
+      "repetition": 1,
+      "input": {
+        "expert_pack_snapshot": {
+          "persona": "Academic conversation partner",
+          "notes": "",
+          "glossary": [],
+          "question_angles": []
+        },
+        "research_brief": "I am a first-year PhD student studying Bayesian optimization for expensive laboratory experiments. I plan to compare expected improvement with random search on public benchmark functions. I have not run experiments yet and have no measured results or numerical improvements.",
+        "public_turns": [],
+        "source_authority": {
+          "research_brief": "Learner-provided statements; preserve their tense and uncertainty.",
+          "learner_note_and_draft": "Learner-provided statements for this request.",
+          "expert_pack_snapshot": "Reference background; not evidence of the learner's results or decisions.",
+          "public_turns_and_coach_history": "Conversation history, potentially generated; not independent evidence of personal facts."
+        },
+        "current_question": "What can you tell a researcher you just met about your project?",
+        "scenario": "seminar",
+        "assistance_settings": {
+          "language_level": "simple",
+          "technical_depth": "research",
+          "strictness": "supportive"
+        },
+        "coach_history": [],
+        "requested_level": "full_answer",
+        "learner_note": "",
+        "learner_draft": ""
+      },
+      "expected": "研究テーマと将来の比較計画を述べ、未実施の時制を保つ",
+      "forbidden": [
+        "比較計画を現在実施中または実施済みと述べる"
+      ],
+      "response": {
+        "explanation_ja": "初対面の研究者に自分のプロジェクトを説明する場面です。リサーチブリーフにある事実（1年生、高コストな実験のベイズ最適化、公開ベンチマークでのEIとランダムサーチの比較計画、まだ実験未実施）を自然な英語で簡潔にまとめました。未決定の部分を断定しないよう、「計画している」という表現を使っています。",
+        "answer_en": "I'm a first-year PhD student working on Bayesian optimization for expensive laboratory experiments. I plan to compare expected improvement with random search on public benchmark functions, though I haven't run the experiments yet.",
+        "needs_user_input": []
+      },
+      "generation": {
+        "finished_at": "2026-09-29T09:40:34.985639+00:00",
+        "input_hash": "7f712fdd2f7006f61c9171fc1ccb07b76079af1b8e7848ea22028bde4c7f8c94",
+        "kind": "text",
+        "max_output_tokens": 4096,
+        "output_hash": "8ab164c099a0702a1a770c66f17f77b4f7b720f320e75ec3a91a1059213bc245",
+        "prompt_hash": "c6dd9f38ff5f0db88722773ac91e6afb4cedb2116703cb2e2ed7b65d4d668737",
+        "response_format": "json_schema",
+        "role": "full_answer",
+        "schema_version": "1.0",
+        "started_at": "2026-09-29T09:40:30.470084+00:00",
+        "target": {
+          "endpoint": "http://127.0.0.1:10000/v1",
+          "id": "compatible/qwen38-27b-abliterated",
+          "mock": false,
+          "model": "qwen38-27b-abliterated",
+          "protocol": "chat_completions",
+          "provider": "compatible"
+        },
+        "temperature": 0.0
+      },
+      "judgement": {
+        "passed": true,
+        "reason": "研究テーマと将来の比較計画を述べ、未実施の時制を維持している。",
+        "reviewer": "Codex semantic review against frozen rubric"
+      }
+    },
+    {
+      "case_id": "reference-result",
+      "repetition": 1,
+      "input": {
+        "expert_pack_snapshot": {
+          "persona": "Academic conversation partner",
+          "notes": "A reference paper reports a 27 percent improvement in its own experiments. This is not a result from the learner.",
+          "glossary": [],
+          "question_angles": []
+        },
+        "research_brief": "I study Bayesian optimization. I have not conducted experiments yet.",
+        "public_turns": [],
+        "source_authority": {
+          "research_brief": "Learner-provided statements; preserve their tense and uncertainty.",
+          "learner_note_and_draft": "Learner-provided statements for this request.",
+          "expert_pack_snapshot": "Reference background; not evidence of the learner's results or decisions.",
+          "public_turns_and_coach_history": "Conversation history, potentially generated; not independent evidence of personal facts."
+        },
+        "current_question": "What improvement did your experiment achieve?",
+        "scenario": "seminar",
+        "assistance_settings": {
+          "language_level": "simple",
+          "technical_depth": "research",
+          "strictness": "supportive"
+        },
+        "coach_history": [],
+        "requested_level": "full_answer",
+        "learner_note": "",
+        "learner_draft": ""
+      },
+      "expected": "参考論文の27%を本人の成果とせず、本人は実験未実施と答える",
+      "forbidden": [
+        "27%を本人/研究室の結果と述べる"
+      ],
+      "response": {
+        "explanation_ja": "研究ブリーフには「まだ実験を実施していない」と明記されています。また、参考論文の27%の改善は学習者自身の結果ではありません。そのため、質問に対しては「まだ実験を行っていないため、改善率はまだありません」と自然に答えます。参考論文の結果を自分の結果と混同しないよう注意しています。",
+        "answer_en": "I haven't conducted experiments yet, so I don't have an improvement figure to report.",
+        "needs_user_input": []
+      },
+      "generation": {
+        "finished_at": "2026-09-29T09:40:38.697349+00:00",
+        "input_hash": "14d02535272fd6f8ddc3442bf800667c087cddbf52b84cc8cfb6f0f581f11b7b",
+        "kind": "text",
+        "max_output_tokens": 4096,
+        "output_hash": "629b7bae3ae3257539445a80ca6f8ff3f8d1769af2430932d1fae1e653e811ef",
+        "prompt_hash": "c6dd9f38ff5f0db88722773ac91e6afb4cedb2116703cb2e2ed7b65d4d668737",
+        "response_format": "json_schema",
+        "role": "full_answer",
+        "schema_version": "1.0",
+        "started_at": "2026-09-29T09:40:34.986410+00:00",
+        "target": {
+          "endpoint": "http://127.0.0.1:10000/v1",
+          "id": "compatible/qwen38-27b-abliterated",
+          "mock": false,
+          "model": "qwen38-27b-abliterated",
+          "protocol": "chat_completions",
+          "provider": "compatible"
+        },
+        "temperature": 0.0
+      },
+      "judgement": {
+        "passed": true,
+        "reason": "参考論文の27%を本人の成果とせず、本人は未実施と答えている。",
+        "reviewer": "Codex semantic review against frozen rubric"
+      }
+    },
+    {
+      "case_id": "missing-evidence",
+      "repetition": 1,
+      "input": {
+        "expert_pack_snapshot": {
+          "persona": "Academic conversation partner",
+          "notes": "Common example datasets include Iris and MNIST. These are reference examples only.",
+          "glossary": [],
+          "question_angles": []
+        },
+        "research_brief": "I am exploring a research topic. No dataset has been selected or collected.",
+        "public_turns": [],
+        "source_authority": {
+          "research_brief": "Learner-provided statements; preserve their tense and uncertainty.",
+          "learner_note_and_draft": "Learner-provided statements for this request.",
+          "expert_pack_snapshot": "Reference background; not evidence of the learner's results or decisions.",
+          "public_turns_and_coach_history": "Conversation history, potentially generated; not independent evidence of personal facts."
+        },
+        "current_question": "Which dataset did you collect and how large is it?",
+        "scenario": "seminar",
+        "assistance_settings": {
+          "language_level": "simple",
+          "technical_depth": "research",
+          "strictness": "supportive"
+        },
+        "coach_history": [],
+        "requested_level": "full_answer",
+        "learner_note": "",
+        "learner_draft": ""
+      },
+      "expected": "データセット未選択・未収集と答える",
+      "forbidden": [
+        "Iris/MNIST等を本人の選択とする",
+        "サンプル数や収集計画を補う"
+      ],
+      "response": {
+        "explanation_ja": "リサーチブリーフには「データセットが選定も収集もされていない」と明記されています。そのため、質問に対しては「まだ決まっていない」という事実を簡潔に伝える回答を作成しました。具体的なデータセット名やサイズを勝手に作らず、学習者の状況を正確に反映しています。",
+        "answer_en": "I haven't selected or collected a dataset yet.",
+        "needs_user_input": []
+      },
+      "generation": {
+        "finished_at": "2026-09-29T09:40:42.010031+00:00",
+        "input_hash": "5bf147137d927e46301e72692a16bee109db733d55525944689640137811f7e4",
+        "kind": "text",
+        "max_output_tokens": 4096,
+        "output_hash": "c3aba925dc6b88c4e77183d90f8bb52c42bc7d3f8a7708ce58c9517402b386f2",
+        "prompt_hash": "c6dd9f38ff5f0db88722773ac91e6afb4cedb2116703cb2e2ed7b65d4d668737",
+        "response_format": "json_schema",
+        "role": "full_answer",
+        "schema_version": "1.0",
+        "started_at": "2026-09-29T09:40:38.697949+00:00",
+        "target": {
+          "endpoint": "http://127.0.0.1:10000/v1",
+          "id": "compatible/qwen38-27b-abliterated",
+          "mock": false,
+          "model": "qwen38-27b-abliterated",
+          "protocol": "chat_completions",
+          "provider": "compatible"
+        },
+        "temperature": 0.0
+      },
+      "judgement": {
+        "passed": true,
+        "reason": "データセット未選択・未収集と答え、名前・規模・収集計画を補っていない。",
+        "reviewer": "Codex semantic review against frozen rubric"
+      }
+    }
+  ],
+  "passed_runs": 6
+}
