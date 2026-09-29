@@ -208,6 +208,8 @@ test("three questions, private coach, fixed text, dictation, persistence and del
     );
     const result = await request.get(`/v1/sessions/${sid}/export`);
     const exported = await result.json();
+    expect(exported.schema_version).toBe("2.0");
+    expect(exported.mode).toBe("share");
     expect(exported.session.turns).toHaveLength(3);
     expect(
       exported.session.turns.every(
@@ -215,8 +217,13 @@ test("three questions, private coach, fixed text, dictation, persistence and del
           t.confirmed_answer_en !== null,
       ),
     ).toBeTruthy();
+    expect(exported.session.turns[0]).not.toHaveProperty("assistance");
+    expect(exported.session.turns[0]).not.toHaveProperty("coach_messages");
+    const localSession = await (
+      await request.get(`/v1/sessions/${sid}`)
+    ).json();
     expect(
-      exported.session.turns[0].assistance.some(
+      localSession.turns[0].assistance.some(
         (a: { kind: string }) => a.kind === "coach_full_answer",
       ),
     ).toBeTruthy();

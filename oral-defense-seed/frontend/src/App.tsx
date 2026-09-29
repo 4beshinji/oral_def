@@ -2,6 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { api, requestId } from "./api";
 import Practice, { modeNames } from "./Practice";
 import Conversation from "./Conversation";
+import DocumentPreparation from "./DocumentPreparation";
+import { clearSessionPending, prunePendingSessions } from "./pendingRecordings";
+import {
+  clearSessionPendingFreeSpeech,
+  prunePendingFreeSpeech,
+} from "./pendingFreeSpeech";
 import ModelPicker from "./ModelPicker";
 import SpeechPicker from "./SpeechPicker";
 import type { SpeechCatalog, SpeechModels } from "./types";
@@ -60,6 +66,7 @@ export default function App() {
   const [conversationRunning, setConversationRunning] = useState(false);
   const busy = working || conversationRunning;
   const [sessionMode, setSessionMode] = useState("shadowing");
+  const [prepareDocuments, setPrepareDocuments] = useState(false);
   const [hold, setHold] = useState(false);
   const [error, setError] = useState("");
   const [turnIndex, setTurnIndex] = useState(-1);
@@ -89,6 +96,12 @@ export default function App() {
           ) as RoleModels,
         );
         setSessions(list);
+        void prunePendingSessions(new Set(list.map((item) => item.id))).catch(
+          () => {},
+        );
+        void prunePendingFreeSpeech(new Set(list.map((item) => item.id))).catch(
+          () => {},
+        );
         setPack(JSON.stringify(sample, null, 2));
         const saved = localStorage.getItem("oral-defense-session");
         if (saved && list.some((s) => s.id === saved)) {
@@ -428,6 +441,18 @@ export default function App() {
                 </option>
               </select>
             </label>
+            {sessionMode === "shadowing" && (
+              <label>
+                <input
+                  type="checkbox"
+                  checked={prepareDocuments}
+                  onChange={(event) =>
+                    setPrepareDocuments(event.target.checked)
+                  }
+                />
+                資料を準備してから会話を開始
+              </label>
+            )}
             <div className="settings-grid">
               <label>
                 場面
@@ -520,6 +545,8 @@ export default function App() {
                     {
                       pack: JSON.parse(pack),
                       mode: sessionMode,
+                      prepare_documents:
+                        sessionMode === "shadowing" && prepareDocuments,
                       research_brief: brief,
                       scenario,
                       role_models: newModels,
@@ -576,7 +603,7 @@ export default function App() {
                   href={`/v1/sessions/${session.id}/export`}
                   download
                 >
-                  JSON保存
+                  共有JSON保存
                 </a>
                 <button
                   className="quiet small"
@@ -593,8 +620,15 @@ export default function App() {
                           undefined,
                           "DELETE",
                         );
-                        await selectSession("");
-                        setSessions(await api("/sessions"));
+                        try {
+                          await Promise.all([
+                            clearSessionPending(session.id),
+                            clearSessionPendingFreeSpeech(session.id),
+                          ]);
+                        } finally {
+                          await selectSession("");
+                          setSessions(await api("/sessions"));
+                        }
                       });
                   }}
                 >
@@ -602,11 +636,21 @@ export default function App() {
                 </button>
               </div>
             </div>
-            {session.conversation ? (
+            {session.conversation &&
+            session.settings.prepare_documents &&
+            !session.settings.pack_started ? (
+              <DocumentPreparation
+                key={session.id}
+                session={session}
+                onReady={refresh}
+              />
+            ) : session.conversation ? (
               <Conversation
                 key={session.id}
                 session={session}
+                asrAvailable={capabilities?.asr.available ?? false}
                 onRunning={setConversationRunning}
+                onHold={setHold}
               />
             ) : !turn ? (
               <section className="panel empty">

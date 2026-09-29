@@ -12,6 +12,22 @@ const scenarios = (
   process.env.VALIDATION_SCENARIOS || "networking,seminar"
 ).split(",");
 const target = Number(process.env.VALIDATION_TURNS || 6);
+const questionKeys = (value) => {
+  const normalized = (text) =>
+    text
+      .normalize("NFKC")
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}_]+/gu, " ")
+      .trim();
+  const sentences = value.split(/[.!?]+/).filter((part) => part.trim());
+  const last = sentences.at(-1) || value;
+  const questionWord = /\b(?:what|why|how|which|when|where|who)\b/i.exec(last);
+  return new Set([
+    normalized(value),
+    normalized(last),
+    ...(questionWord ? [normalized(last.slice(questionWord.index))] : []),
+  ]);
+};
 await mkdir(output, { recursive: true });
 const browser = await chromium.launch({
   executablePath: process.env.CHROME_BIN || "/usr/bin/google-chrome",
@@ -117,6 +133,14 @@ try {
       fullPage: true,
     });
     const confirmed = saved.turns.filter((turn) => turn.confirmed_answer_en);
+    const seenQuestions = new Set();
+    const duplicateQuestionOrdinals = [];
+    for (const turn of saved.turns) {
+      const keys = questionKeys(turn.question_en);
+      if ([...keys].some((key) => seenQuestions.has(key)))
+        duplicateQuestionOrdinals.push(turn.ordinal);
+      for (const key of keys) seenQuestions.add(key);
+    }
     const completedAudio = saved.playbacks.filter(
       (playback) =>
         playback.status === "completed" &&
@@ -134,12 +158,17 @@ try {
       text_model: saved.settings.text_model,
       speech_models: saved.settings.speech_models,
       completed_audio: completedAudio,
+      duplicate_question_ordinals: duplicateQuestionOrdinals,
+      recovery_question_ordinals: saved.turns
+        .filter((turn) => turn.generation?.recovery)
+        .map((turn) => turn.ordinal),
       recorded: saved.turns.some((turn) => turn.has_recording),
       passed:
         !saved.settings.text_model.mock &&
         completedAudio >= 2 * target &&
         !failure &&
         !errors.length &&
+        !duplicateQuestionOrdinals.length &&
         confirmed.length >= target &&
         confirmed.every((turn) => turn.submitted_via === "shadowing_playback"),
     };

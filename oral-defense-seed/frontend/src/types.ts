@@ -42,6 +42,22 @@ export type Attempt = {
   dictation_text: string | null;
   audio_meta: { duration_s?: number };
   result: (Assessment | DictationResult) | null;
+  audio_available: boolean;
+  input_kind: string;
+  assessment: AssessmentRun | null;
+};
+export type AssessmentRun = {
+  id: string;
+  execution_status: string;
+  evidence_status: string | null;
+  error_message: string | null;
+  created_at: string;
+  result: Assessment | null;
+};
+export type HistoryPage<T> = {
+  items: T[];
+  total: number;
+  next_before: number | null;
 };
 export type Exercise = {
   id: string;
@@ -50,6 +66,8 @@ export type Exercise = {
   reference_hash: string;
   reference_origin: string;
   attempts: Attempt[];
+  attempts_total: number;
+  attempts_before: number | null;
 };
 export type CoachMessage = {
   id: string;
@@ -71,11 +89,16 @@ export type Turn = {
   has_recording: boolean;
   follow_up_count: number;
   coach_messages: CoachMessage[];
+  coach_messages_total: number;
+  coach_messages_before: number | null;
   exercises: Exercise[];
+  exercises_total: number;
+  exercises_before: number | null;
   assistance: { kind: string }[];
 };
 export type ConversationState = {
   id: string;
+  mode: "shadowing" | "free_speech";
   status: "paused" | "running" | "ended";
   stage: string;
   revision: number;
@@ -90,8 +113,14 @@ export type Session = {
   research_brief: string;
   scenario: string;
   status: string;
+  pack_snapshot: Record<string, unknown>;
   turns: Turn[];
+  turns_total: number;
+  confirmed_turns_total: number;
+  turns_before: number | null;
   settings: {
+    prepare_documents?: boolean;
+    pack_started?: boolean;
     speech_models: SpeechModels;
     text_model: TextModel;
     role_models: Record<TextRole, TextModel>;
@@ -122,6 +151,7 @@ export type Capabilities = {
   };
   tts: { mock: boolean; provider: string; endpoint: string | null };
   pronunciation: { status: string };
+  asr: { available: boolean; provider: string; model_id: string | null };
   retention: string;
 };
 

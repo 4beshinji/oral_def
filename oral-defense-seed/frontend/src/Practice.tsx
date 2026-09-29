@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { api, requestId } from "./api";
-import type { Assessment, DictationResult, Exercise, Mode } from "./types";
+import type {
+  Assessment,
+  Attempt,
+  DictationResult,
+  Exercise,
+  HistoryPage,
+  Mode,
+} from "./types";
 
 export const modeNames: Record<Mode, string> = {
   read_aloud: "音読",
@@ -44,6 +51,40 @@ export default function Practice({
   const tick = useRef<number>(0);
   const capture = useRef<MediaTrackSettings>({});
   const mounted = useRef(true);
+  const [olderAttempts, setOlderAttempts] = useState<Attempt[]>([]);
+  const [attemptsBefore, setAttemptsBefore] = useState(
+    exercise.attempts_before,
+  );
+  const attempts = [
+    ...new Map(
+      [...olderAttempts, ...exercise.attempts].map((attempt) => [
+        attempt.id,
+        attempt,
+      ]),
+    ).values(),
+  ];
+
+  useEffect(() => {
+    setOlderAttempts((saved) => [
+      ...new Map(
+        [...saved, ...exercise.attempts].map((attempt) => [
+          attempt.id,
+          attempt,
+        ]),
+      ).values(),
+    ]);
+  }, [exercise.attempts]);
+
+  async function loadOlderAttempts() {
+    await action(async () => {
+      const page = await api<HistoryPage<Attempt>>(
+        `/exercises/${exercise.id}/attempts?before=${attemptsBefore}`,
+      );
+      if (!mounted.current) return;
+      setOlderAttempts((saved) => [...page.items, ...saved]);
+      setAttemptsBefore(page.next_before);
+    });
+  }
 
   useEffect(() => {
     mounted.current = true;
@@ -302,20 +343,31 @@ export default function Practice({
         </div>
       )}
       <h3>
-        試行履歴 <span className="muted">{exercise.attempts.length}</span>
+        試行履歴{" "}
+        <span className="muted">
+          {attempts.length} / {exercise.attempts_total}件
+        </span>
       </h3>
-      {!exercise.attempts.length && (
+      {attemptsBefore !== null && (
+        <button
+          disabled={working || recording}
+          onClick={() => void loadOlderAttempts()}
+        >
+          以前の試行を読み込む
+        </button>
+      )}
+      {!attempts.length && (
         <p className="muted">
           まだ試行はありません。録音やdictationの結果がここに残ります。
         </p>
       )}
-      {exercise.attempts
+      {attempts
         .slice()
         .reverse()
         .map((attempt, index) => (
           <article className="attempt" key={attempt.id}>
             <div className="section-heading">
-              <strong>試行 {exercise.attempts.length - index}</strong>
+              <strong>試行 {exercise.attempts_total - index}</strong>
               {attempt.audio_meta.duration_s !== undefined && (
                 <span className="small muted">
                   {attempt.audio_meta.duration_s.toFixed(1)} 秒
@@ -348,6 +400,14 @@ export default function Practice({
                   onClick={() =>
                     void action(async () => {
                       await api(`/attempts/${attempt.id}/assess`, requestId());
+                      const updated = await api<Attempt>(
+                        `/attempts/${attempt.id}`,
+                      );
+                      setOlderAttempts((saved) =>
+                        saved.map((item) =>
+                          item.id === updated.id ? updated : item,
+                        ),
+                      );
                       await refresh();
                     })
                   }

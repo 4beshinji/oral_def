@@ -1,21 +1,37 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, requestId } from "./api";
-import type { ConversationState, Session } from "./types";
+import ConversationHistory, { ExerciseHistory } from "./ConversationHistory";
+import ConversationCoach from "./ConversationCoach";
+import ConversationRecording from "./ConversationRecording";
+import FreeSpeechInput from "./FreeSpeechInput";
+import type { ConversationState, Session, Turn } from "./types";
 
 const stages: Record<string, string> = {
   question_generation: "相手の発言を生成中",
   question_playback: "相手の発言",
   coach_generation: "Coachがお手本を準備中",
   model_playback: "お手本に重ねて話しましょう",
+  free_speech_input: "自由発話で返答",
 };
 
-type Props = { session: Session; onRunning: (value: boolean) => void };
+type Props = {
+  session: Session;
+  asrAvailable: boolean;
+  onRunning: (value: boolean) => void;
+  onHold: (value: boolean) => void;
+};
 
-export default function Conversation({ session, onRunning }: Props) {
+export default function Conversation({
+  session,
+  asrAvailable,
+  onRunning,
+  onHold,
+}: Props) {
   const [snapshot, setSnapshot] = useState(session);
   const [state, setState] = useState(session.conversation!);
   const [running, setRunning] = useState(false);
   const [pending, setPending] = useState(false);
+  const [recordingHold, setRecordingHold] = useState(false);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState("");
   const [route, setRoute] = useState<"saved" | "browser">("saved");
@@ -25,9 +41,16 @@ export default function Conversation({ session, onRunning }: Props) {
   const [draft, setDraft] = useState("");
   const generation = useRef(0);
   const cancelAudio = useRef<(() => void) | null>(null);
+  const stopCapture = useRef<(() => void) | null>(null);
+  const registerStopCapture = useCallback((stop: (() => void) | null) => {
+    stopCapture.current = stop;
+  }, []);
   const mounted = useRef(false);
   const base = `/sessions/${session.id}/conversation`;
   const activeTurn = snapshot.turns.find((turn) => turn.id === state.turn_id);
+  // A new turn id can arrive before its snapshot. Keep the Coach mounted so
+  // an in-flight reply remains attached to its original request and turn.
+  const supportTurn = activeTurn || snapshot.turns.at(-1);
   const reference = activeTurn?.exercises.find(
     (exercise) => exercise.id === state.reference_id,
   );
@@ -51,6 +74,7 @@ export default function Conversation({ session, onRunning }: Props) {
     return () => {
       mounted.current = false;
       generation.current++;
+      stopCapture.current?.();
       cancelAudio.current?.();
       onRunning(false);
       void fetch("/v1" + base + "/control", {
@@ -63,6 +87,7 @@ export default function Conversation({ session, onRunning }: Props) {
   }, [session.id]);
 
   function play(text: string, audioId: string | null): Promise<void> {
+    document.querySelectorAll("audio").forEach((audio) => audio.pause());
     return new Promise((resolve, reject) => {
       const audio = audioId ? new Audio(`/v1/audio/${audioId}`) : null;
       const utterance = audio ? null : new SpeechSynthesisUtterance(text);
@@ -131,6 +156,7 @@ export default function Conversation({ session, onRunning }: Props) {
   }
 
   async function start() {
+    document.querySelectorAll("audio").forEach((audio) => audio.pause());
     const token = ++generation.current;
     const valid = () => mounted.current && generation.current === token;
     setRunning(true);
@@ -142,6 +168,13 @@ export default function Conversation({ session, onRunning }: Props) {
       });
       while (valid()) {
         setState(next);
+        if (next.stage === "free_speech_input") {
+          next = await api<ConversationState>(base + "/control", {
+            action: "pause",
+          });
+          if (valid()) setState(next);
+          break;
+        }
         next = await api<ConversationState>(base + "/step", {
           revision: next.revision,
           route,
@@ -162,6 +195,7 @@ export default function Conversation({ session, onRunning }: Props) {
         if (!valid()) break;
         setState(playback.state);
         await play(playback.text, playback.audio_id);
+        if (playback.state.stage === "model_playback") stopCapture.current?.();
         if (!valid()) break;
         next = await api<ConversationState>(base + "/ended", {
           ...requestId(),
@@ -173,6 +207,7 @@ export default function Conversation({ session, onRunning }: Props) {
         }
       }
     } catch (e) {
+      stopCapture.current?.();
       if (valid()) {
         setError(e instanceof Error ? e.message : "会話を停止しました。");
         try {
@@ -197,6 +232,7 @@ export default function Conversation({ session, onRunning }: Props) {
 
   async function stop(action: "pause" | "end") {
     generation.current++;
+    stopCapture.current?.();
     cancelAudio.current?.();
     setRunning(false);
     setPending(true);
@@ -213,16 +249,38 @@ export default function Conversation({ session, onRunning }: Props) {
     }
   }
 
+  async function changeMode(mode: "shadowing" | "free_speech") {
+    setPending(true);
+    setError("");
+    try {
+      const changed = await api<ConversationState>(base + "/mode", {
+        mode,
+        revision: state.revision,
+      });
+      setState(changed);
+      await reload(generation.current);
+    } catch (cause) {
+      setError(
+        cause instanceof Error
+          ? cause.message
+          : "モードを変更できませんでした。",
+      );
+    } finally {
+      setPending(false);
+    }
+  }
+
   async function revise(text?: string) {
     setPending(true);
     onRunning(true);
     setError("");
     try {
       setState(
-        await api<ConversationState>(
-          base + "/reference",
-          text === undefined ? {} : { text },
-        ),
+        await api<ConversationState>(base + "/reference", {
+          revision: state.revision,
+          turn_id: state.turn_id,
+          ...(text === undefined ? {} : { text }),
+        }),
       );
       await reload(generation.current);
       setDraft("");
@@ -236,20 +294,75 @@ export default function Conversation({ session, onRunning }: Props) {
     }
   }
 
+  async function supportSaved(turnId: string) {
+    const saved = await api<Turn>(`/sessions/${session.id}/turns/${turnId}`);
+    if (mounted.current)
+      setSnapshot((current) => ({
+        ...current,
+        turns: current.turns.map((turn) => (turn.id === turnId ? saved : turn)),
+      }));
+  }
+
+  async function adopt(messageId: string, turnId: string) {
+    setPending(true);
+    onRunning(true);
+    setError("");
+    try {
+      setState(
+        await api<ConversationState>(base + "/adopt", {
+          revision: state.revision,
+          turn_id: turnId,
+          reference_id: state.reference_id,
+          message_id: messageId,
+        }),
+      );
+      await reload(generation.current);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setPending(false);
+      onRunning(false);
+    }
+  }
+
   return (
-    <section className="panel" aria-label="シャドウイング会話">
-      <span className="eyebrow">COACH / SHADOWING</span>
+    <section className="panel" aria-label="会話">
+      <span className="eyebrow">COACH / CONVERSATION</span>
       <h2>
         {running
           ? stages[state.stage]
           : state.status === "ended"
             ? "会話を終了しました"
-            : "シャドウイング会話"}
+            : state.mode === "free_speech"
+              ? "自由発話の会話"
+              : "シャドウイング会話"}
       </h2>
       <p>
-        相手を聞き、お手本に重ねて話します。お手本の再生完了で返答を確定し、自動で次へ進みます。録音は不要です。
+        {state.mode === "free_speech"
+          ? "相手の発言を聞き、マイクで返答します。最終文字起こしで返答を確定し、次の発言に進みます。"
+          : "相手を聞き、お手本に重ねて話します。お手本の再生完了で返答を確定し、自動で次へ進みます。録音は不要です。"}
       </p>
       <div className="button-row">
+        <label>
+          会話モード
+          <select
+            aria-label="現在の会話モード"
+            value={state.mode}
+            disabled={
+              !ready ||
+              running ||
+              pending ||
+              recordingHold ||
+              state.status !== "paused"
+            }
+            onChange={(event) =>
+              void changeMode(event.target.value as "shadowing" | "free_speech")
+            }
+          >
+            <option value="shadowing">Coachのお手本</option>
+            <option value="free_speech">自由発話</option>
+          </select>
+        </label>
         <label>
           音声経路
           <select
@@ -299,9 +412,15 @@ export default function Conversation({ session, onRunning }: Props) {
           {error}
         </p>
       )}
-      <div className="button-row">
+      <div className="button-row conversation-controls">
         <button
-          disabled={!ready || running || pending || state.status === "ended"}
+          disabled={
+            !ready ||
+            running ||
+            pending ||
+            recordingHold ||
+            state.status === "ended"
+          }
           onClick={() => void start()}
         >
           開始 / 再開
@@ -314,7 +433,9 @@ export default function Conversation({ session, onRunning }: Props) {
         </button>
         <button
           className="secondary"
-          disabled={!ready || pending || state.status === "ended"}
+          disabled={
+            !ready || pending || recordingHold || state.status === "ended"
+          }
           onClick={() => void stop("end")}
         >
           会話を終了
@@ -324,8 +445,8 @@ export default function Conversation({ session, onRunning }: Props) {
         <article aria-label="現在の会話">
           <h3>相手 · {activeTurn.ordinal}</h3>
           {subtitles && <p lang="en">{activeTurn.question_en}</p>}
-          <h3>Coachのお手本</h3>
-          {subtitles && reference && (
+          {state.mode === "shadowing" && <h3>Coachのお手本</h3>}
+          {state.mode === "shadowing" && subtitles && reference && (
             <p lang="en">{reference.reference_text}</p>
           )}
           {meaning &&
@@ -333,6 +454,60 @@ export default function Conversation({ session, onRunning }: Props) {
               <p key={message.id}>{message.response.explanation_ja}</p>
             ))}
         </article>
+      )}
+      {supportTurn && (
+        <ConversationCoach
+          turn={supportTurn}
+          state={state}
+          pending={pending}
+          onSaved={supportSaved}
+          adopt={adopt}
+        />
+      )}
+      {state.mode === "free_speech" &&
+        state.stage === "free_speech_input" &&
+        state.status !== "ended" && (
+          <FreeSpeechInput
+            sessionId={session.id}
+            asrAvailable={asrAvailable}
+            state={state}
+            onState={setState}
+            onCommitted={() => {
+              void reload(generation.current);
+              void start();
+            }}
+            onHolding={(value) => {
+              setRecordingHold(value);
+              onHold(value);
+            }}
+          />
+        )}
+      {state.mode === "shadowing" && (
+        <ConversationRecording
+          sessionId={session.id}
+          reference={reference}
+          paused={ready && !running && !pending && state.status === "paused"}
+          overlapAllowed={
+            running &&
+            !pending &&
+            state.status === "running" &&
+            state.stage === "model_playback" &&
+            state.playback_id !== null
+          }
+          onHolding={(value) => {
+            setRecordingHold(value);
+            onHold(value);
+          }}
+          onSaved={() => reload(generation.current)}
+          registerStop={registerStopCapture}
+        />
+      )}
+      {reference && (
+        <ExerciseHistory
+          key={reference.id}
+          exercise={reference}
+          disabled={running}
+        />
       )}
       {!running &&
         state.status === "paused" &&
@@ -361,40 +536,16 @@ export default function Conversation({ session, onRunning }: Props) {
             </button>
           </details>
         )}
-      <details>
-        <summary>
-          確定済み公開会話 (
-          {snapshot.turns.filter((turn) => turn.confirmed_answer_en).length}
-          往復)
-        </summary>
-        {snapshot.turns
-          .filter((turn) => turn.confirmed_answer_en)
-          .map((turn) => (
-            <article key={turn.id}>
-              <p lang="en">相手: {turn.question_en}</p>
-              <p lang="en">返答: {turn.confirmed_answer_en}</p>
-              <p className="small">
-                確定元:{" "}
-                {turn.submitted_via === "shadowing_playback"
-                  ? "お手本の再生完了"
-                  : "本人の確認"}{" "}
-                · 録音: {turn.has_recording ? "あり" : "なし"}
-              </p>
-              <button
-                className="secondary"
-                disabled={running || pending}
-                onClick={() => {
-                  setPending(true);
-                  void play(turn.confirmed_answer_en!, null)
-                    .catch((e) => setError(e.message))
-                    .finally(() => setPending(false));
-                }}
-              >
-                過去のお手本をブラウザで反復
-              </button>
-            </article>
-          ))}
-      </details>
+      <ConversationHistory
+        session={snapshot}
+        disabled={running || pending}
+        repeat={(text) => {
+          setPending(true);
+          void play(text, null)
+            .catch((e) => setError(e.message))
+            .finally(() => setPending(false));
+        }}
+      />
     </section>
   );
 }
